@@ -1,6 +1,12 @@
 name: ci
 
-on: push
+on:
+  push:
+    branches:
+      - main
+      - 'dev-*'
+    tags:
+      - 'v*.*.*'
 
 jobs:
   build:
@@ -19,8 +25,14 @@ jobs:
         with:
           images: ${{ secrets.REGISTRY }}/${{ secrets.REGISTRY_IMAGE }}
           tags: |
-            type=raw,enable=${{ github.ref == 'refs/heads/main' }},value=latest
-            type=raw,value={{date 'YYMMDD-HHmmss' tz='Asia/Shanghai'}}
+            type=raw,enable=${{ startsWith(github.ref, 'refs/tags/v') }},value=latest
+            type=semver,pattern={{version}}
+            type=semver,pattern={{major}}.{{minor}}
+            type=raw,enable=${{ startsWith(github.ref, 'refs/tags/v') }},value=release-{{sha}}
+            type=ref,event=branch,enable=${{ startsWith(github.ref, 'refs/heads/dev-') }}
+            type=ref,event=branch,enable=${{ startsWith(github.ref, 'refs/heads/dev-') }},suffix=-{{sha}}
+            type=raw,enable=${{ github.ref == 'refs/heads/main' }},value=next
+            type=raw,enable=${{ github.ref == 'refs/heads/main' }},value=next-{{sha}}
 
       -
         name: Set up QEMU
