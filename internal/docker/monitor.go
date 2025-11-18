@@ -221,8 +221,8 @@ func (m *Monitor) scanContainers(ctx context.Context) {
 func (m *Monitor) containerToAppInfo(ctr *types.Container) *interceptor.AppInfo {
 	// Check if WatchCow is enabled for this container
 	if ctr.Labels["watchcow.enable"] != "true" {
-		// Fall back to auto-discovery for containers without watchcow.enable
-		return m.autoDiscoverApp(ctr)
+		// Skip containers without watchcow.enable=true
+		return nil
 	}
 
 	// Extract container name (remove leading /)
@@ -281,56 +281,6 @@ func (m *Monitor) containerToAppInfo(ctr *types.Container) *interceptor.AppInfo 
 		FileTypes: []string{},
 		IsDisplay: isDisplay,
 		Category:  category,
-	}
-
-	return app
-}
-
-// autoDiscoverApp automatically discovers app info from container (legacy behavior)
-func (m *Monitor) autoDiscoverApp(ctr *types.Container) *interceptor.AppInfo {
-	// Extract container name (remove leading /)
-	name := strings.TrimPrefix(ctr.Names[0], "/")
-
-	// Get first exposed port
-	port := getFirstPublicPort(ctr)
-	if port == "" {
-		// No exposed ports, skip
-		return nil
-	}
-
-	// Auto-detect protocol from first port
-	var protocol string
-	if len(ctr.Ports) > 0 && ctr.Ports[0].Type == "tcp" {
-		protocol = "http"
-	} else if len(ctr.Ports) > 0 {
-		protocol = string(ctr.Ports[0].Type)
-	} else {
-		protocol = "http"
-	}
-
-	// Build app info with auto-discovered values
-	app := &interceptor.AppInfo{
-		AppName:   fmt.Sprintf("docker-%s", name),
-		AppID:     ctr.ID[:12],
-		EntryName: fmt.Sprintf("docker-%s.Application", name),
-		Title:     prettifyName(name),
-		Desc:      fmt.Sprintf("Docker: %s", ctr.Image),
-		Icon:      guessIcon(ctr.Image),
-		Type:      "url",
-		URI: map[string]interface{}{
-			"protocol": protocol,
-			"host":     "",
-			"port":     port,
-			"path":     "/",
-			"fnDomain": fmt.Sprintf("docker-%s", name),
-		},
-		MicroApp:  false,
-		NativeApp: false,
-		FullURL:   "",
-		Status:    "running",
-		FileTypes: []string{},
-		IsDisplay: true,
-		Category:  "Docker",
 	}
 
 	return app
