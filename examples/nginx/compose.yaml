@@ -5,6 +5,7 @@ services:
     ports:
       - "8080:80"
     restart: unless-stopped
+    network_mode: bridge
 
     labels:
       # 启用 WatchCow 发现

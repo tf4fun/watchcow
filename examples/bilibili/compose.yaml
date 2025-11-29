@@ -10,6 +10,8 @@ services:
       sh -c "chmod +x /www/cgi-bin/index.cgi &&
              httpd -f -p 3000 -h /www"
     restart: unless-stopped
+    stop_signal: SIGKILL  # 立即强制停止
+    network_mode: bridge
 
     labels:
       # 启用 WatchCow 发现
