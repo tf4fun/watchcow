@@ -79,20 +79,93 @@ services:
 
 ## 配置标签
 
+### 应用级配置
+
 | 标签 | 必需 | 默认值 | 说明 |
 |------|------|--------|------|
 | `watchcow.enable` | 是 | - | 设为 `"true"` 启用 |
 | `watchcow.appname` | 否 | `watchcow.<容器名>` | 应用唯一标识 |
-| `watchcow.display_name` | 否 | 容器名 | 应用显示名称 |
+| `watchcow.display_name` | 否 | 容器名 | 应用显示名称（manifest） |
 | `watchcow.desc` | 否 | 镜像名 | 应用描述 |
 | `watchcow.version` | 否 | `1.0.0` | 应用版本 |
 | `watchcow.maintainer` | 否 | `WatchCow` | 维护者 |
+
+### 入口配置（默认入口）
+
+| 标签 | 必需 | 默认值 | 说明 |
+|------|------|--------|------|
 | `watchcow.service_port` | 否 | 首个暴露端口 | Web UI 端口 |
 | `watchcow.protocol` | 否 | `http` | 协议 (`http`/`https`) |
 | `watchcow.path` | 否 | `/` | URL 路径 |
 | `watchcow.ui_type` | 否 | `url` | UI 类型 (`url` 新标签页 / `iframe` 桌面窗口) |
 | `watchcow.all_users` | 否 | `true` | 访问权限 (`true` 所有用户 / `false` 仅管理员) |
+| `watchcow.title` | 否 | `display_name` | 入口标题 |
 | `watchcow.icon` | 否 | 自动猜测 | 图标 URL 或 `file://` 本地路径 |
+| `watchcow.file_types` | 否 | - | 支持的文件类型（逗号分隔），用于文件右键菜单 |
+| `watchcow.no_display` | 否 | `false` | 设为 `true` 则不在桌面显示 |
+| `watchcow.control.access_perm` | 否 | `readonly` | 访问权限设置权限 |
+| `watchcow.control.port_perm` | 否 | `readonly` | 端口设置权限 |
+| `watchcow.control.path_perm` | 否 | `readonly` | 路径设置权限 |
+
+### 多入口配置
+
+WatchCow 支持为单个应用配置多个入口。使用 `watchcow.<entry>.<field>` 格式定义命名入口：
+
+| 标签 | 说明 |
+|------|------|
+| `watchcow.<entry>.service_port` | 入口端口 |
+| `watchcow.<entry>.protocol` | 入口协议 |
+| `watchcow.<entry>.path` | 入口路径 |
+| `watchcow.<entry>.ui_type` | 入口 UI 类型 |
+| `watchcow.<entry>.all_users` | 入口访问权限 |
+| `watchcow.<entry>.title` | 入口标题（默认：`display_name - entry`） |
+| `watchcow.<entry>.icon` | 入口图标 |
+| `watchcow.<entry>.file_types` | 支持的文件类型（逗号分隔），用于文件右键菜单 |
+| `watchcow.<entry>.no_display` | 设为 `true` 则不在桌面显示，仅在右键菜单显示 |
+| `watchcow.<entry>.control.access_perm` | 访问权限设置权限：`editable`/`readonly`/`hidden` |
+| `watchcow.<entry>.control.port_perm` | 端口设置权限：`editable`/`readonly`/`hidden` |
+| `watchcow.<entry>.control.path_perm` | 路径设置权限：`editable`/`readonly`/`hidden` |
+
+**多入口示例：**
+
+```yaml
+services:
+  myapp:
+    image: myapp:latest
+    ports:
+      - "8080:8080"
+      - "8081:8081"
+    labels:
+      watchcow.enable: "true"
+      watchcow.display_name: "我的应用"
+
+      # 主入口
+      watchcow.main.service_port: "8080"
+      watchcow.main.path: "/"
+      watchcow.main.title: "我的应用"
+
+      # 管理后台入口
+      watchcow.admin.service_port: "8081"
+      watchcow.admin.path: "/admin"
+      watchcow.admin.title: "管理后台"
+      watchcow.admin.all_users: "false"
+      watchcow.admin.ui_type: "iframe"
+```
+
+**文件右键菜单示例：**
+
+```yaml
+labels:
+  watchcow.enable: "true"
+  watchcow.display_name: "文本编辑器"
+
+  # 编辑器入口（文件右键菜单）
+  watchcow.editor.service_port: "8080"
+  watchcow.editor.path: "/edit"
+  watchcow.editor.title: "用文本编辑器打开"
+  watchcow.editor.file_types: "txt,md,json,xml"
+  watchcow.editor.no_display: "true"
+```
 
 ### 图标配置
 

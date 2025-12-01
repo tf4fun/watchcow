@@ -3,6 +3,7 @@ package fpkgen
 import (
 	"bytes"
 	"embed"
+	"encoding/json"
 	"fmt"
 	"os"
 	"path/filepath"
@@ -91,6 +92,88 @@ func (e *TemplateEngine) ListTemplates() []string {
 	return names
 }
 
+// UIConfigControl represents control settings in UI config JSON
+type UIConfigControl struct {
+	AccessPerm string `json:"accessPerm,omitempty"`
+	PortPerm   string `json:"portPerm,omitempty"`
+	PathPerm   string `json:"pathPerm,omitempty"`
+}
+
+// UIConfigEntry represents a single entry in UI config JSON
+type UIConfigEntry struct {
+	Title     string           `json:"title"`
+	Icon      string           `json:"icon"`
+	Type      string           `json:"type"`
+	Protocol  string           `json:"protocol"`
+	Port      string           `json:"port"`
+	URL       string           `json:"url"`
+	AllUsers  bool             `json:"allUsers"`
+	FileTypes []string         `json:"fileTypes,omitempty"`
+	NoDisplay bool             `json:"noDisplay,omitempty"`
+	Control   *UIConfigControl `json:"control,omitempty"`
+}
+
+// UIConfig represents the complete UI config JSON structure
+type UIConfig struct {
+	URL map[string]*UIConfigEntry `json:".url"`
+}
+
+// GenerateUIConfigJSON generates the UI config JSON content
+func GenerateUIConfigJSON(data *TemplateData) ([]byte, error) {
+	config := &UIConfig{
+		URL: make(map[string]*UIConfigEntry),
+	}
+
+	for _, entry := range data.Entries {
+		var control *UIConfigControl
+		if entry.Control != nil {
+			control = &UIConfigControl{
+				AccessPerm: entry.Control.AccessPerm,
+				PortPerm:   entry.Control.PortPerm,
+				PathPerm:   entry.Control.PathPerm,
+			}
+		}
+
+		config.URL[entry.FullName] = &UIConfigEntry{
+			Title:     entry.Title,
+			Icon:      entry.Icon,
+			Type:      entry.UIType,
+			Protocol:  entry.Protocol,
+			Port:      entry.Port,
+			URL:       entry.Path,
+			AllUsers:  entry.AllUsers,
+			FileTypes: entry.FileTypes,
+			NoDisplay: entry.NoDisplay,
+			Control:   control,
+		}
+	}
+
+	return json.MarshalIndent(config, "", "    ")
+}
+
+// EntryControlData holds permission control data for template rendering
+type EntryControlData struct {
+	AccessPerm string
+	PortPerm   string
+	PathPerm   string
+}
+
+// EntryData holds data for a single UI entry in template rendering
+type EntryData struct {
+	Name      string // Entry name (empty for default)
+	FullName  string // Full entry name: AppName or AppName.EntryName
+	Title     string // Display title
+	Protocol  string
+	Port      string
+	Path      string
+	UIType    string
+	AllUsers  bool
+	Icon      string            // Icon path (e.g., "images/icon_{0}.png")
+	FileTypes []string          // Supported file types
+	NoDisplay bool              // Hide from desktop
+	Control   *EntryControlData // Permission control
+}
+
 // TemplateData holds all data needed for template rendering
 type TemplateData struct {
 	// Identity
@@ -105,12 +188,16 @@ type TemplateData struct {
 	ContainerName string
 	Image         string
 
-	// Network/UI
+	// Network/UI (legacy single entry - kept for backward compatibility)
 	Protocol string
 	Port     string
 	Path     string
 	UIType   string
 	AllUsers bool
+
+	// Multi-entry support
+	Entries            []EntryData
+	DefaultLaunchEntry string // The entry name to use for desktop_applaunchname (first entry's FullName)
 
 	// Collections
 	Ports       []string
@@ -162,6 +249,69 @@ func NewTemplateData(config *AppConfig) *TemplateData {
 	if config.Port != "" {
 		data.Ports = []string{config.Port + ":" + config.Port}
 	}
+
+	// Convert entries to template data
+	var firstEntryFullName string
+	for i, entry := range config.Entries {
+		// Generate icon filename: "icon_{0}.png" for default, "icon_<name>_{0}.png" for named
+		iconFilename := "icon_{0}.png"
+		if entry.Name != "" {
+			iconFilename = "icon_" + entry.Name + "_{0}.png"
+		}
+
+		// Generate full entry name: AppName for default, AppName.EntryName for named
+		fullName := config.AppName
+		if entry.Name != "" {
+			fullName = config.AppName + "." + entry.Name
+		}
+
+		// Apply defaults for entry fields
+		protocol := entry.Protocol
+		if protocol == "" {
+			protocol = "http"
+		}
+		path := entry.Path
+		if path == "" {
+			path = "/"
+		}
+		uiType := entry.UIType
+		if uiType == "" {
+			uiType = "url"
+		}
+
+		// Convert control settings
+		var controlData *EntryControlData
+		if entry.Control != nil {
+			controlData = &EntryControlData{
+				AccessPerm: entry.Control.AccessPerm,
+				PortPerm:   entry.Control.PortPerm,
+				PathPerm:   entry.Control.PathPerm,
+			}
+		}
+
+		data.Entries = append(data.Entries, EntryData{
+			Name:      entry.Name,
+			FullName:  fullName,
+			Title:     entry.Title,
+			Protocol:  protocol,
+			Port:      entry.Port,
+			Path:      path,
+			UIType:    uiType,
+			AllUsers:  entry.AllUsers,
+			Icon:      "images/" + iconFilename,
+			FileTypes: entry.FileTypes,
+			NoDisplay: entry.NoDisplay,
+			Control:   controlData,
+		})
+
+		// Track first entry for default launch entry
+		if i == 0 {
+			firstEntryFullName = fullName
+		}
+	}
+
+	// Set default launch entry to first entry's full name
+	data.DefaultLaunchEntry = firstEntryFullName
 
 	return data
 }

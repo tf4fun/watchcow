@@ -124,7 +124,6 @@ func (g *Generator) generateFromTemplates(appDir string, data *TemplateData) err
 		{"cmd_main.tmpl", "cmd/main", 0755},
 		{"config_privilege.json.tmpl", "config/privilege", 0644},
 		{"config_resource.json.tmpl", "config/resource", 0644},
-		{"ui_config.json.tmpl", "app/ui/config", 0644},
 		{"LICENSE.tmpl", "LICENSE", 0644},
 	}
 
@@ -133,6 +132,16 @@ func (g *Generator) generateFromTemplates(appDir string, data *TemplateData) err
 		if err := g.templateEngine.RenderToFile(m.template, filePath, data, m.perm); err != nil {
 			return fmt.Errorf("failed to generate %s: %w", m.path, err)
 		}
+	}
+
+	// Generate UI config JSON directly (not using template)
+	uiConfigPath := filepath.Join(appDir, "app", "ui", "config")
+	uiConfigJSON, err := GenerateUIConfigJSON(data)
+	if err != nil {
+		return fmt.Errorf("failed to generate UI config: %w", err)
+	}
+	if err := os.WriteFile(uiConfigPath, uiConfigJSON, 0644); err != nil {
+		return fmt.Errorf("failed to write UI config: %w", err)
 	}
 
 	// Generate empty cmd scripts
@@ -168,10 +177,13 @@ func (g *Generator) extractConfig(container *dockercontainer.InspectResponse) *A
 	sanitizedName := sanitizeAppName(name)
 	appName := getLabel(labels, "watchcow.appname", fmt.Sprintf("watchcow.%s", sanitizedName))
 
+	defaultIcon := getLabel(labels, "watchcow.icon", guessIcon(container.Config.Image))
+	displayName := getLabel(labels, "watchcow.display_name", prettifyName(name))
+
 	config := &AppConfig{
 		AppName:       appName,
 		Version:       getLabel(labels, "watchcow.version", "1.0.0"),
-		DisplayName:   getLabel(labels, "watchcow.display_name", prettifyName(name)),
+		DisplayName:   displayName,
 		Description:   getLabel(labels, "watchcow.desc", fmt.Sprintf("Docker container: %s", container.Config.Image)),
 		Maintainer:    getLabel(labels, "watchcow.maintainer", "WatchCow"),
 		ContainerID:   container.ID[:12],
@@ -182,7 +194,7 @@ func (g *Generator) extractConfig(container *dockercontainer.InspectResponse) *A
 		Path:          getLabel(labels, "watchcow.path", "/"),
 		UIType:        getLabel(labels, "watchcow.ui_type", "url"),
 		AllUsers:      getLabel(labels, "watchcow.all_users", "true") == "true",
-		Icon:          getLabel(labels, "watchcow.icon", guessIcon(container.Config.Image)),
+		Icon:          defaultIcon,
 		Environment:   filterEnvironment(container.Config.Env),
 		Labels:        labels,
 	}
@@ -190,6 +202,26 @@ func (g *Generator) extractConfig(container *dockercontainer.InspectResponse) *A
 	// Extract port if not specified in label
 	if config.Port == "" {
 		config.Port = extractFirstPort(container)
+	}
+
+	// Parse multi-entry configuration
+	config.Entries = parseEntries(labels, displayName, defaultIcon, config.Port)
+
+	// If no entries configured, create a default entry for backward compatibility
+	if len(config.Entries) == 0 {
+		config.Entries = []Entry{{
+			Name:      "",
+			Title:     displayName,
+			Protocol:  config.Protocol,
+			Port:      config.Port,
+			Path:      config.Path,
+			UIType:    config.UIType,
+			AllUsers:  config.AllUsers,
+			Icon:      defaultIcon,
+			FileTypes: nil,
+			NoDisplay: false,
+			Control:   nil,
+		}}
 	}
 
 	// Extract volumes
@@ -380,4 +412,144 @@ func prettifyName(name string) string {
 	}
 
 	return strings.Join(words, " ")
+}
+
+// Multi-entry parsing functions
+
+// entryFields defines which label suffixes are entry-specific configuration fields
+var entryFields = map[string]bool{
+	"service_port":        true,
+	"protocol":            true,
+	"path":                true,
+	"ui_type":             true,
+	"all_users":           true,
+	"icon":                true,
+	"title":               true,
+	"file_types":          true,
+	"no_display":          true,
+	"control.access_perm": true,
+	"control.port_perm":   true,
+	"control.path_perm":   true,
+}
+
+// isEntryField checks if a field name is an entry configuration field
+func isEntryField(field string) bool {
+	if entryFields[field] {
+		return true
+	}
+	// Also check for control.* prefix
+	if strings.HasPrefix(field, "control.") {
+		return true
+	}
+	return false
+}
+
+// hasDefaultEntry checks if there's a default entry configuration in labels
+func hasDefaultEntry(labels map[string]string) bool {
+	_, hasPort := labels["watchcow.service_port"]
+	_, hasProtocol := labels["watchcow.protocol"]
+	_, hasPath := labels["watchcow.path"]
+	_, hasTitle := labels["watchcow.title"]
+	_, hasUIType := labels["watchcow.ui_type"]
+	return hasPort || hasProtocol || hasPath || hasTitle || hasUIType
+}
+
+// parseEntry parses a single entry from labels
+// name: entry name (empty string for default entry)
+// displayName: app display name for generating default title
+// defaultIcon: fallback icon URL
+func parseEntry(labels map[string]string, name string, displayName string, defaultIcon string) Entry {
+	prefix := "watchcow."
+	if name != "" {
+		prefix = "watchcow." + name + "."
+	}
+
+	// title default logic:
+	// - default entry: use display_name
+	// - named entry: use "display_name - entry_name"
+	title := getLabel(labels, prefix+"title", "")
+	if title == "" {
+		if name == "" {
+			title = displayName
+		} else {
+			title = displayName + " - " + name
+		}
+	}
+
+	// Parse file types (comma-separated list)
+	var fileTypes []string
+	if ft := getLabel(labels, prefix+"file_types", ""); ft != "" {
+		for _, t := range strings.Split(ft, ",") {
+			t = strings.TrimSpace(t)
+			if t != "" {
+				fileTypes = append(fileTypes, t)
+			}
+		}
+	}
+
+	// Parse control settings
+	var control *EntryControl
+	accessPerm := getLabel(labels, prefix+"control.access_perm", "")
+	portPerm := getLabel(labels, prefix+"control.port_perm", "")
+	pathPerm := getLabel(labels, prefix+"control.path_perm", "")
+	if accessPerm != "" || portPerm != "" || pathPerm != "" {
+		control = &EntryControl{
+			AccessPerm: accessPerm,
+			PortPerm:   portPerm,
+			PathPerm:   pathPerm,
+		}
+	}
+
+	return Entry{
+		Name:      name,
+		Title:     title,
+		Protocol:  getLabel(labels, prefix+"protocol", "http"),
+		Port:      getLabel(labels, prefix+"service_port", ""),
+		Path:      getLabel(labels, prefix+"path", "/"),
+		UIType:    getLabel(labels, prefix+"ui_type", "url"),
+		AllUsers:  getLabel(labels, prefix+"all_users", "true") == "true",
+		Icon:      getLabel(labels, prefix+"icon", defaultIcon),
+		FileTypes: fileTypes,
+		NoDisplay: getLabel(labels, prefix+"no_display", "false") == "true",
+		Control:   control,
+	}
+}
+
+// parseEntries extracts all entries from container labels
+func parseEntries(labels map[string]string, displayName string, defaultIcon string, defaultPort string) []Entry {
+	entries := []Entry{}
+	entryNames := make(map[string]bool)
+
+	// Scan all labels to identify named entries
+	for key := range labels {
+		if !strings.HasPrefix(key, "watchcow.") {
+			continue
+		}
+
+		suffix := strings.TrimPrefix(key, "watchcow.")
+		parts := strings.SplitN(suffix, ".", 2)
+
+		// Check if this is a named entry field (e.g., "admin.service_port")
+		if len(parts) == 2 && isEntryField(parts[1]) {
+			entryNames[parts[0]] = true
+		}
+	}
+
+	// Check for default entry configuration
+	if hasDefaultEntry(labels) {
+		entry := parseEntry(labels, "", displayName, defaultIcon)
+		// Use container's first port as fallback if not specified
+		if entry.Port == "" {
+			entry.Port = defaultPort
+		}
+		entries = append(entries, entry)
+	}
+
+	// Parse named entries
+	for name := range entryNames {
+		entry := parseEntry(labels, name, displayName, defaultIcon)
+		entries = append(entries, entry)
+	}
+
+	return entries
 }
