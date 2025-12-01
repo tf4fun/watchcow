@@ -8,9 +8,11 @@ maintainer={{.Maintainer}}
 distributor={{.Maintainer}}
 os_min_version=0.9.0
 install_type=root
+{{- if .DefaultLaunchEntry}}
 desktop_uidir=ui
-desktop_applaunchname={{.AppName}}.Application
+desktop_applaunchname={{.DefaultLaunchEntry}}
 {{- if .Port}}
 service_port={{.Port}}
 checkport=false
+{{- end}}
 {{- end}}

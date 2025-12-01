@@ -1,0 +1,60 @@
+# Bookmark 服务 - 单容器多入口书签管理
+
+configs:
+  redirect:
+    content: |
+      #!/bin/sh
+      # 根据 query string 匹配跳转目标
+      case "$$QUERY_STRING" in
+        bilibili) URL="https://www.bilibili.com/" ;;
+        github)   URL="https://github.com/" ;;
+        youtube)  URL="https://www.youtube.com/" ;;
+        *)        URL="" ;;
+      esac
+
+      if [ -n "$$URL" ]; then
+        echo "Status: 302 Found"
+        echo "Location: $$URL"
+        echo ""
+      else
+        echo "Status: 404 Not Found"
+        echo "Content-Type: text/plain"
+        echo ""
+        echo "Bookmark not found: $$QUERY_STRING"
+      fi
+
+services:
+  bookmark:
+    image: busybox:uclibc
+    container_name: bookmark
+    ports:
+      - "3001:3001"
+    configs:
+      - source: redirect
+        target: /www/cgi-bin/index.cgi
+        mode: 0755
+    command: httpd -f -p 3001 -h /www
+    restart: unless-stopped
+    stop_signal: SIGKILL
+    network_mode: bridge
+
+    labels:
+      watchcow.enable: "true"
+      watchcow.appname: "watchcow.bookmark"
+      watchcow.display_name: "网站书签"
+      watchcow.desc: "常用网站快捷跳转"
+
+      watchcow.bilibili.service_port: "3001"
+      watchcow.bilibili.path: "/cgi-bin/index.cgi?bilibili"
+      watchcow.bilibili.title: "哔哩哔哩"
+      watchcow.bilibili.icon: "https://cdn.jsdelivr.net/gh/homarr-labs/dashboard-icons/png/bilibili.png"
+
+      watchcow.github.service_port: "3001"
+      watchcow.github.path: "/cgi-bin/index.cgi?github"
+      watchcow.github.title: "GitHub"
+      watchcow.github.icon: "https://cdn.jsdelivr.net/gh/homarr-labs/dashboard-icons/png/github.png"
+
+      watchcow.youtube.service_port: "3001"
+      watchcow.youtube.path: "/cgi-bin/index.cgi?youtube"
+      watchcow.youtube.title: "YouTube"
+      watchcow.youtube.icon: "https://cdn.jsdelivr.net/gh/homarr-labs/dashboard-icons/png/youtube.png"

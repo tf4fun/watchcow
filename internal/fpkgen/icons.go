@@ -19,65 +19,112 @@ import (
 //go:embed defaults/ICON.PNG defaults/ICON_256.PNG
 var defaultIcons embed.FS
 
-// handleIcons downloads/generates and saves all required icon files
+// handleIcons downloads/generates and saves all required icon files for all entries
 func (g *Generator) handleIcons(appDir string, config *AppConfig) error {
-	var originalIcon image.Image
-	var err error
+	var defaultIcon image.Image
 
-	// Try to load icon from various sources
-	if config.Icon != "" {
-		if strings.HasPrefix(config.Icon, "file://") {
-			// Load from local file path
-			localPath := strings.TrimPrefix(config.Icon, "file://")
-			originalIcon, err = loadLocalIcon(localPath)
-			if err != nil {
-				fmt.Printf("Warning: Failed to load icon from %s: %v\n", localPath, err)
-			}
-		} else if strings.HasPrefix(config.Icon, "http") {
-			// Download from URL
-			originalIcon, err = downloadIcon(config.Icon)
-			if err != nil {
-				fmt.Printf("Warning: Failed to download icon from %s: %v\n", config.Icon, err)
-			}
-		}
-	}
-
-	// If no icon downloaded, use embedded default icon
-	if originalIcon == nil {
-		originalIcon, err = loadDefaultIcon()
+	// Process each entry's icon
+	for _, entry := range config.Entries {
+		entryIcon, err := loadIconFromSource(entry.Icon)
 		if err != nil {
-			return fmt.Errorf("failed to load default icon: %w", err)
+			fmt.Printf("Warning: Failed to load icon for entry '%s': %v\n", entry.Name, err)
+		}
+
+		// Use default icon if loading failed
+		if entryIcon == nil {
+			if defaultIcon == nil {
+				defaultIcon, err = loadDefaultIcon()
+				if err != nil {
+					return fmt.Errorf("failed to load default icon: %w", err)
+				}
+			}
+			entryIcon = defaultIcon
+		}
+
+		// Resize to required sizes
+		icon64 := resizeImage(entryIcon, 64, 64)
+		icon256 := resizeImage(entryIcon, 256, 256)
+
+		// Generate icon filenames based on entry name
+		// Default entry: icon_64.png, icon_256.png
+		// Named entry: icon_<name>_64.png, icon_<name>_256.png
+		var icon64Name, icon256Name string
+		if entry.Name == "" {
+			icon64Name = "icon_64.png"
+			icon256Name = "icon_256.png"
+		} else {
+			icon64Name = fmt.Sprintf("icon_%s_64.png", entry.Name)
+			icon256Name = fmt.Sprintf("icon_%s_256.png", entry.Name)
+		}
+
+		// Save to ui/images directory
+		uiImagesDir := filepath.Join(appDir, "app", "ui", "images")
+		if err := saveImage(icon64, filepath.Join(uiImagesDir, icon64Name)); err != nil {
+			return fmt.Errorf("failed to save icon %s: %w", icon64Name, err)
+		}
+		if err := saveImage(icon256, filepath.Join(uiImagesDir, icon256Name)); err != nil {
+			return fmt.Errorf("failed to save icon %s: %w", icon256Name, err)
+		}
+
+		// For default entry, also save to root directory as ICON.PNG and ICON_256.PNG
+		if entry.Name == "" {
+			if err := saveImage(icon64, filepath.Join(appDir, "ICON.PNG")); err != nil {
+				return fmt.Errorf("failed to save ICON.PNG: %w", err)
+			}
+			if err := saveImage(icon256, filepath.Join(appDir, "ICON_256.PNG")); err != nil {
+				return fmt.Errorf("failed to save ICON_256.PNG: %w", err)
+			}
 		}
 	}
 
-	// Resize to required sizes
-	icon64 := resizeImage(originalIcon, 64, 64)
-	icon256 := resizeImage(originalIcon, 256, 256)
-
-	// Save to all required locations
-	locations64 := []string{
-		filepath.Join(appDir, "ICON.PNG"),
-		filepath.Join(appDir, "app", "ui", "images", "icon_64.png"),
-	}
-
-	locations256 := []string{
-		filepath.Join(appDir, "ICON_256.PNG"),
-		filepath.Join(appDir, "app", "ui", "images", "icon_256.png"),
-	}
-
-	for _, path := range locations64 {
-		if err := saveImage(icon64, path); err != nil {
-			return fmt.Errorf("failed to save icon to %s: %w", path, err)
+	// If no entries had a default entry, use first entry's icon for root icons
+	if len(config.Entries) > 0 {
+		hasDefaultEntry := false
+		for _, entry := range config.Entries {
+			if entry.Name == "" {
+				hasDefaultEntry = true
+				break
+			}
 		}
-	}
 
-	for _, path := range locations256 {
-		if err := saveImage(icon256, path); err != nil {
-			return fmt.Errorf("failed to save icon to %s: %w", path, err)
+		if !hasDefaultEntry {
+			// Use first entry's icon for root icons
+			firstEntry := config.Entries[0]
+			entryIcon, _ := loadIconFromSource(firstEntry.Icon)
+			if entryIcon == nil {
+				if defaultIcon == nil {
+					defaultIcon, _ = loadDefaultIcon()
+				}
+				entryIcon = defaultIcon
+			}
+			if entryIcon != nil {
+				icon64 := resizeImage(entryIcon, 64, 64)
+				icon256 := resizeImage(entryIcon, 256, 256)
+				saveImage(icon64, filepath.Join(appDir, "ICON.PNG"))
+				saveImage(icon256, filepath.Join(appDir, "ICON_256.PNG"))
+			}
 		}
 	}
 
 	return nil
+}
+
+// loadIconFromSource loads an icon from URL or local file path
+func loadIconFromSource(iconSource string) (image.Image, error) {
+	if iconSource == "" {
+		return nil, fmt.Errorf("empty icon source")
+	}
+
+	if strings.HasPrefix(iconSource, "file://") {
+		// Load from local file path
+		localPath := strings.TrimPrefix(iconSource, "file://")
+		return loadLocalIcon(localPath)
+	} else if strings.HasPrefix(iconSource, "http") {
+		// Download from URL
+		return downloadIcon(iconSource)
+	}
+
+	return nil, fmt.Errorf("unsupported icon source: %s", iconSource)
 }
 
 // loadDefaultIcon loads the embedded default icon
