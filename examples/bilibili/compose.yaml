@@ -1,14 +1,23 @@
+configs:
+  redirect:
+    content: |
+      #!/bin/sh
+      echo "Status: 302 Found"
+      echo "Location: https://www.bilibili.com/"
+      echo ""
+
+
 services:
   bilibili:
     image: busybox:uclibc
     container_name: bilibili-redirect
     ports:
       - "3000:3000"
-    volumes:
-      - ./redirect.sh:/www/cgi-bin/index.cgi
-    command: >
-      sh -c "chmod +x /www/cgi-bin/index.cgi &&
-             httpd -f -p 3000 -h /www"
+    configs:
+      - source: redirect
+        target: /www/cgi-bin/index.cgi
+        mode: 0755
+    command: httpd -f -p 3000 -h /www
     restart: unless-stopped
     stop_signal: SIGKILL  # 立即强制停止
     network_mode: bridge
