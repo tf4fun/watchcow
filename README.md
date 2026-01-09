@@ -10,7 +10,7 @@ WatchCow 监控 Docker 容器事件，自动将带有 `watchcow.enable=true` 标
 - **自动安装** - 生成 fnOS 应用包并自动安装
 - **生命周期同步** - 容器启动/停止/销毁与 fnOS 应用状态同步
 - **灵活配置** - 通过 Docker labels 自定义应用信息
-- **图标支持** - 支持 HTTP URL 或本地文件 (`file://...`) 作为图标
+- **图标支持** - 支持 HTTP URL 或本地文件 (`file://...`) 作为图标，自动转换多种格式
 
 ## 工作原理
 
@@ -175,8 +175,35 @@ labels:
 # HTTP/HTTPS URL
 watchcow.icon: "https://example.com/icon.png"
 
-# 本地文件
+# 本地文件（绝对路径）
 watchcow.icon: "file:///path/to/icon.png"
+
+# 本地文件（相对路径，相对于 compose 文件所在目录）
+watchcow.icon: "file://./icons/icon.png"
+watchcow.icon: "file://icons/icon.png"
+```
+
+**支持的图标格式：**
+
+| 格式 | 说明 |
+|------|------|
+| PNG | 直接使用 |
+| JPEG/JPG | 自动转换为 PNG |
+| WebP | 自动转换为 PNG |
+| BMP | 自动转换为 PNG |
+| ICO | 自动选择最高分辨率图像并转换为 PNG |
+
+图标格式通过文件内容（magic bytes）自动检测，不依赖文件扩展名。
+
+**相对路径说明：**
+
+使用 Docker Compose 部署时，`file://` 相对路径会相对于 compose 文件所在目录解析。这是通过读取容器的 `com.docker.compose.project.working_dir` 标签实现的。
+
+```
+project/
+├── compose.yaml
+└── icons/
+    └── myapp.png    # file://icons/myapp.png 或 file://./icons/myapp.png
 ```
 
 ## 开发

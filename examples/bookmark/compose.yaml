@@ -52,9 +52,9 @@ services:
       watchcow.github.service_port: "3001"
       watchcow.github.path: "/cgi-bin/index.cgi?github"
       watchcow.github.title: "GitHub"
-      watchcow.github.icon: "file://./icons/github.webp"
+      watchcow.github.icon: "file://icons/github.webp"
 
       watchcow.youtube.service_port: "3001"
       watchcow.youtube.path: "/cgi-bin/index.cgi?youtube"
       watchcow.youtube.title: "YouTube"
-      watchcow.youtube.icon: "file://./icons//youtube.ico"
+      watchcow.youtube.icon: "file://icons/youtube.ico"

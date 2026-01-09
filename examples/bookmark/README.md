@@ -31,6 +31,23 @@ watchcow.newsite.title: "新网站"
 watchcow.newsite.icon: "https://cdn.jsdelivr.net/gh/homarr-labs/dashboard-icons/png/newsite.png"
 ```
 
+## 图标配置
+
+支持多种图标来源和格式：
+
+```yaml
+# HTTP URL
+watchcow.bilibili.icon: "https://cdn.jsdelivr.net/gh/homarr-labs/dashboard-icons/png/bilibili.png"
+
+# 本地文件（相对路径，相对于 compose.yaml 所在目录）
+watchcow.github.icon: "file://icons/github.webp"
+
+# 本地文件（ICO 格式，自动选择最高分辨率）
+watchcow.youtube.icon: "file://./icons/youtube.ico"
+```
+
+**支持的格式：** PNG、JPEG、WebP、BMP、ICO（自动转换为 PNG）
+
 ## 图标查找
 
 [Dashboard Icons](https://github.com/homarr-labs/dashboard-icons) 提供常用服务图标。
