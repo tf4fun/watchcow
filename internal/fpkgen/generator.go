@@ -177,7 +177,7 @@ func (g *Generator) extractConfig(container *dockercontainer.InspectResponse) *A
 	sanitizedName := sanitizeAppName(name)
 	appName := getLabel(labels, "watchcow.appname", fmt.Sprintf("watchcow.%s", sanitizedName))
 
-	defaultIcon := getLabel(labels, "watchcow.icon", guessIcon(container.Config.Image))
+	defaultIcon := getLabel(labels, "watchcow.icon", buildIconURL(container.Config.Image))
 	displayName := getLabel(labels, "watchcow.display_name", prettifyName(name))
 
 	config := &AppConfig{
@@ -371,30 +371,55 @@ func extractFirstPort(container *dockercontainer.InspectResponse) string {
 	return ""
 }
 
-// guessIcon tries to guess an appropriate icon URL based on image name
-func guessIcon(image string) string {
+// getIconCDNTemplate returns the CDN template URL from environment variable
+func getIconCDNTemplate() string {
+	if tmpl := os.Getenv("WATCHCOW_ICON_CDN_TEMPLATE"); tmpl != "" {
+		return tmpl
+	}
+	return "https://cdn.jsdelivr.net/gh/homarr-labs/dashboard-icons/png/%s.png"
+}
+
+// getLocalIconPath checks if icon exists in local data-share folder
+// Returns file:// URL if found, empty string otherwise
+func getLocalIconPath(imageName string) string {
+	dataSharePaths := os.Getenv("TRIM_DATA_SHARE_PATHS")
+	if dataSharePaths == "" {
+		return ""
+	}
+
+	// Try supported icon extensions
+	extensions := []string{".png", ".jpg", ".jpeg", ".webp", ".bmp", ".ico"}
+	for _, ext := range extensions {
+		iconPath := filepath.Join(dataSharePaths, imageName+ext)
+		if _, err := os.Stat(iconPath); err == nil {
+			return "file://" + iconPath
+		}
+	}
+
+	return ""
+}
+
+// buildIconURL builds icon URL from image name
+// Priority: local data-share > CDN template
+// Returns empty string if no icon source available
+func buildIconURL(image string) string {
 	parts := strings.Split(image, "/")
 	imageName := parts[len(parts)-1]
 	imageName = strings.Split(imageName, ":")[0]
+	imageName = strings.ToLower(imageName)
 
-	iconMap := map[string]string{
-		"jellyfin": "jellyfin", "portainer": "portainer", "nginx": "nginx",
-		"postgres": "postgresql", "postgresql": "postgresql", "mysql": "mysql",
-		"mariadb": "mariadb", "redis": "redis", "mongodb": "mongodb", "mongo": "mongodb",
-		"plex": "plex", "sonarr": "sonarr", "radarr": "radarr", "traefik": "traefik",
-		"grafana": "grafana", "prometheus": "prometheus", "homeassistant": "home-assistant",
-		"nextcloud": "nextcloud", "gitea": "gitea", "gitlab": "gitlab", "jenkins": "jenkins",
-		"minio": "minio", "rabbitmq": "rabbitmq", "elasticsearch": "elasticsearch",
-		"kibana": "kibana", "caddy": "caddy", "apache": "apache", "httpd": "apache",
-		"wordpress": "wordpress", "ghost": "ghost", "discourse": "discourse",
-		"memos": "memos", "vaultwarden": "vaultwarden", "bitwarden": "bitwarden",
+	// Try local data-share first
+	if localPath := getLocalIconPath(imageName); localPath != "" {
+		return localPath
 	}
 
-	if iconName, ok := iconMap[strings.ToLower(imageName)]; ok {
-		return fmt.Sprintf("https://cdn.jsdelivr.net/gh/homarr-labs/dashboard-icons/png/%s.png", iconName)
+	// Fall back to CDN
+	cdnTemplate := getIconCDNTemplate()
+	if cdnTemplate == "" {
+		return ""
 	}
 
-	return "https://cdn.jsdelivr.net/gh/homarr-labs/dashboard-icons/png/docker.png"
+	return fmt.Sprintf(cdnTemplate, imageName)
 }
 
 // prettifyName converts container name to a nice title

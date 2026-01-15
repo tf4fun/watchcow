@@ -1,0 +1,28 @@
+[
+  {
+    "stepTitle": "图标 CDN 配置",
+    "items": [
+      {
+        "type": "tips",
+        "helpText": "WatchCow 可以自动为未配置图标的容器从 CDN 获取图标。"
+      },
+      {
+        "type": "tips",
+        "helpText": "默认使用 <a target=\"_blank\" href=\"https://github.com/homarr-labs/dashboard-icons\">homarr-labs/dashboard-icons</a> 图标库。"
+      },
+      {
+        "type": "text",
+        "field": "WATCHCOW_ICON_CDN_TEMPLATE",
+        "label": "图标 CDN 模板",
+        "initValue": "https://cdn.jsdelivr.net/gh/homarr-labs/dashboard-icons/png/%s.png",
+        "helpText": "使用 %s 作为图标名称占位符",
+        "rules": [
+          {
+            "pattern": "^https?://.*%s.*",
+            "message": "URL 必须包含 %s 占位符"
+          }
+        ]
+      }
+    ]
+  }
+]
