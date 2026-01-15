@@ -177,7 +177,7 @@ func (g *Generator) extractConfig(container *dockercontainer.InspectResponse) *A
 	sanitizedName := sanitizeAppName(name)
 	appName := getLabel(labels, "watchcow.appname", fmt.Sprintf("watchcow.%s", sanitizedName))
 
-	defaultIcon := getLabel(labels, "watchcow.icon", buildIconURL(container.Config.Image))
+	defaultIcon := getLabel(labels, "watchcow.icon", buildIconURLFromImage(container.Config.Image))
 	displayName := getLabel(labels, "watchcow.display_name", prettifyName(name))
 
 	config := &AppConfig{
@@ -399,17 +399,14 @@ func getLocalIconPath(imageName string) string {
 	return ""
 }
 
-// buildIconURL builds icon URL from image name
+// buildIconURL builds icon URL from name
 // Priority: local data-share > CDN template
 // Returns empty string if no icon source available
-func buildIconURL(image string) string {
-	parts := strings.Split(image, "/")
-	imageName := parts[len(parts)-1]
-	imageName = strings.Split(imageName, ":")[0]
-	imageName = strings.ToLower(imageName)
+func buildIconURL(name string) string {
+	name = strings.ToLower(name)
 
 	// Try local data-share first
-	if localPath := getLocalIconPath(imageName); localPath != "" {
+	if localPath := getLocalIconPath(name); localPath != "" {
 		return localPath
 	}
 
@@ -419,7 +416,15 @@ func buildIconURL(image string) string {
 		return ""
 	}
 
-	return fmt.Sprintf(cdnTemplate, imageName)
+	return fmt.Sprintf(cdnTemplate, name)
+}
+
+// buildIconURLFromImage builds icon URL from docker image name
+func buildIconURLFromImage(image string) string {
+	parts := strings.Split(image, "/")
+	imageName := parts[len(parts)-1]
+	imageName = strings.Split(imageName, ":")[0]
+	return buildIconURL(imageName)
 }
 
 // prettifyName converts container name to a nice title
@@ -482,7 +487,7 @@ func hasDefaultEntry(labels map[string]string) bool {
 // parseEntry parses a single entry from labels
 // name: entry name (empty string for default entry)
 // displayName: app display name for generating default title
-// defaultIcon: fallback icon URL
+// defaultIcon: fallback icon URL (used for default entry)
 func parseEntry(labels map[string]string, name string, displayName string, defaultIcon string) Entry {
 	prefix := "watchcow."
 	if name != "" {
@@ -499,6 +504,14 @@ func parseEntry(labels map[string]string, name string, displayName string, defau
 		} else {
 			title = displayName + " - " + name
 		}
+	}
+
+	// icon default logic:
+	// - default entry: use defaultIcon (based on image name)
+	// - named entry: use entry name to build icon URL
+	iconFallback := defaultIcon
+	if name != "" {
+		iconFallback = buildIconURL(name)
 	}
 
 	// Parse file types (comma-separated list)
@@ -533,7 +546,7 @@ func parseEntry(labels map[string]string, name string, displayName string, defau
 		Path:      getLabel(labels, prefix+"path", "/"),
 		UIType:    getLabel(labels, prefix+"ui_type", "url"),
 		AllUsers:  getLabel(labels, prefix+"all_users", "true") == "true",
-		Icon:      getLabel(labels, prefix+"icon", defaultIcon),
+		Icon:      getLabel(labels, prefix+"icon", iconFallback),
 		FileTypes: fileTypes,
 		NoDisplay: getLabel(labels, prefix+"no_display", "false") == "true",
 		Control:   control,
