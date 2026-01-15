@@ -169,7 +169,38 @@ labels:
 
 ### 图标配置
 
-支持两种图标来源：
+WatchCow 按以下优先级获取图标：
+
+1. **用户配置** - 通过 `watchcow.icon` 或 `watchcow.<entry>.icon` 标签指定
+2. **本地图标库** - 从 WatchCow 应用文件目录查找
+3. **CDN 图标库** - 从配置的 CDN 模板 URL 获取
+
+**图标名称规则：**
+- 默认入口：使用 Docker 镜像名称（如 `nginx:alpine` → `nginx`）
+- 命名入口：使用入口名称（如 `watchcow.admin.service_port` → `admin`）
+
+**CDN 配置：**
+
+安装 WatchCow 时可配置图标 CDN 模板，默认使用 [homarr-labs/dashboard-icons](https://github.com/homarr-labs/dashboard-icons)：
+
+```
+https://cdn.jsdelivr.net/gh/homarr-labs/dashboard-icons/png/%s.png
+```
+
+其中 `%s` 会被替换为图标名称。安装后可在应用设置中修改。
+
+**本地图标库：**
+
+将图标文件放入 文件管理 → 应用文件 → icons 文件夹中，文件名使用镜像名（默认入口）或入口名（命名入口）：
+
+```
+icons/
+├── nginx.png      # 用于 nginx 镜像的默认入口
+├── memos.png      # 用于 memos 镜像的默认入口
+└── admin.webp     # 用于名为 admin 的命名入口
+```
+
+**手动指定图标：**
 
 ```yaml
 # HTTP/HTTPS URL

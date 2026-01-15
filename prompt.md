@@ -96,7 +96,17 @@ appcenter-cli install-local
 
 ### 图标配置
 
-支持的来源：
+WatchCow 按以下优先级获取图标：
+
+1. **用户配置** - 通过 `watchcow.icon` 或 `watchcow.<entry>.icon` 标签指定
+2. **本地图标库** - 从 文件管理 → 应用文件 → icons 文件夹查找
+3. **CDN 图标库** - 从配置的 CDN 模板 URL 获取（默认使用 Dashboard Icons）
+
+**图标名称规则：**
+- 默认入口：使用 Docker 镜像名称（如 `nginx:alpine` → `nginx`）
+- 命名入口：使用入口名称（如 `watchcow.admin.service_port` → `admin`）
+
+**手动指定图标：**
 ```yaml
 # HTTP/HTTPS URL
 watchcow.icon: "https://example.com/icon.png"
