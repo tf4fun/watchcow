@@ -18,7 +18,7 @@ WatchCow 监控 Docker 容器事件，自动将带有 `watchcow.enable=true` 标
     <td>
       <b>WatchCow 小助手</b><br/>
       帮助将 Docker Compose 转换为 WatchCow 格式，协助排查部署问题<br/>
-      <sub>基于豆包智能体搭建</sub>
+      <sub>基于豆包智能体搭建 · <a href="https://www.doubao.com/bot/vW5CFHu6">开始对话</a></sub>
     </td>
   </tr>
 </table>
