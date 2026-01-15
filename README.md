@@ -4,6 +4,25 @@
 
 WatchCow 监控 Docker 容器事件，自动将带有 `watchcow.enable=true` 标签的容器转换为 fnOS 原生应用，通过 `appcenter-cli install-local` 安装到应用中心。
 
+## AI 助手
+
+不熟悉配置？试试让 AI 助手快速将普通 Docker Compose 转换为 WatchCow 格式：
+
+<table>
+  <tr>
+    <td width="80">
+      <a href="https://www.doubao.com/bot/vW5CFHu6">
+        <img src="README.assets/icon_circle.png" width="64" alt="WatchCow AI 助手" />
+      </a>
+    </td>
+    <td>
+      <b>WatchCow 小助手</b><br/>
+      帮助将 Docker Compose 转换为 WatchCow 格式，协助排查部署问题<br/>
+      <sub>基于豆包智能体搭建</sub>
+    </td>
+  </tr>
+</table>
+
 ## 功能特性
 
 - **自动发现** - 监听 Docker 事件，自动检测启用的容器
