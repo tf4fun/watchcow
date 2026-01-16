@@ -18,11 +18,12 @@ import (
 
 // AppOperation represents an operation to be processed serially
 type AppOperation struct {
-	Type        string // "install", "start", "stop", "uninstall", "register", "destroy"
+	Type        string            // "install", "start", "stop", "destroy", "container_start"
 	AppName     string
 	AppDir      string
 	ContainerID string
-	Container   *ContainerState // for register operation
+	ContainerName string
+	Labels      map[string]string
 	ResultCh    chan error
 }
 
@@ -92,78 +93,139 @@ func (m *Monitor) runOperationWorker(ctx context.Context) {
 		case <-m.stopCh:
 			return
 		case op := <-m.opQueue:
-			var err error
 			switch op.Type {
-			case "register":
-				// Register container state
-				m.containers[op.ContainerID] = op.Container
-				slog.Debug("Registered container", "container", op.Container.ContainerName, "id", op.ContainerID)
+			case "container_start":
+				m.processContainerStart(ctx, op)
 
 			case "install":
-				// Check if container still exists (not destroyed during generation)
-				state, exists := m.containers[op.ContainerID]
-				if !exists {
-					slog.Info("Container no longer tracked, skipping install", "app", op.AppName)
-					os.RemoveAll(op.AppDir)
-					break
-				}
-
-				slog.Info("Installing fnOS app", "app", op.AppName)
-				if m.installer != nil {
-					err = m.installer.InstallLocal(op.AppDir)
-				}
-				os.RemoveAll(op.AppDir)
-
-				if err == nil {
-					state.Installed = true
-					state.AppName = op.AppName
-					slog.Info("Successfully installed fnOS app", "app", op.AppName)
-					m.generator.MarkInstalled(op.ContainerID, &fpkgen.AppConfig{AppName: op.AppName})
-				}
-
-			case "start":
-				slog.Info("Starting fnOS app", "app", op.AppName)
-				if m.installer != nil {
-					err = m.installer.StartApp(op.AppName)
-				}
+				m.processInstall(op)
 
 			case "stop":
-				// Check if container still tracked and installed
-				state, exists := m.containers[op.ContainerID]
-				if !exists || !state.Installed {
-					slog.Debug("Container not tracked or not installed, skipping stop", "id", op.ContainerID)
-					break
-				}
-				slog.Info("Stopping fnOS app", "app", state.AppName)
-				if m.installer != nil {
-					err = m.installer.StopApp(state.AppName)
-				}
+				m.processStop(op)
 
 			case "destroy":
-				state, exists := m.containers[op.ContainerID]
-				if !exists {
-					slog.Debug("Container not tracked, skipping destroy", "id", op.ContainerID)
-					break
-				}
-
-				appName := state.AppName
-				wasInstalled := state.Installed
-
-				// Remove from tracking
-				delete(m.containers, op.ContainerID)
-				m.generator.MarkUninstalled(op.ContainerID)
-
-				// Uninstall if was installed
-				if wasInstalled && m.installer != nil {
-					slog.Info("Uninstalling fnOS app", "app", appName)
-					err = m.installer.Uninstall(appName)
-				}
-			}
-
-			if op.ResultCh != nil {
-				op.ResultCh <- err
+				m.processDestroy(op)
 			}
 		}
+	}
+}
+
+// processContainerStart handles container start - check if installed, start or generate
+func (m *Monitor) processContainerStart(ctx context.Context, op *AppOperation) {
+	appName := getAppNameFromLabels(op.Labels, op.ContainerName)
+
+	// Check if already installed in fnOS
+	if m.installer != nil && m.installer.IsAppInstalled(appName) {
+		// Already installed, register and start it
+		slog.Info("App already installed, starting", "app", appName)
+		m.containers[op.ContainerID] = &ContainerState{
+			ContainerID:   op.ContainerID,
+			ContainerName: op.ContainerName,
+			AppName:       appName,
+			Installed:     true,
+			Labels:        op.Labels,
+		}
+		if m.installer != nil {
+			m.installer.StartApp(appName)
+		}
+		return
+	}
+
+	// Not installed, register as pending
+	m.containers[op.ContainerID] = &ContainerState{
+		ContainerID:   op.ContainerID,
+		ContainerName: op.ContainerName,
+		AppName:       appName,
+		Installed:     false,
+		Labels:        op.Labels,
+	}
+
+	// Generate app package (this blocks the worker, but ensures serialization)
+	time.Sleep(2 * time.Second)
+
+	config, appDir, err := m.generator.GenerateFromContainer(ctx, op.ContainerID)
+	if err != nil {
+		slog.Error("Failed to generate fnOS app", "container", op.ContainerName, "error", err)
+		delete(m.containers, op.ContainerID)
+		return
+	}
+
+	// Check if container was destroyed during generation
+	if _, exists := m.containers[op.ContainerID]; !exists {
+		slog.Info("Container destroyed during generation, skipping install", "container", op.ContainerName)
+		os.RemoveAll(appDir)
+		return
+	}
+
+	// Install
+	slog.Info("Installing fnOS app", "app", config.AppName)
+	if m.installer != nil {
+		if err := m.installer.InstallLocal(appDir); err != nil {
+			slog.Error("Failed to install fnOS app", "app", config.AppName, "error", err)
+		} else {
+			if state, exists := m.containers[op.ContainerID]; exists {
+				state.Installed = true
+				state.AppName = config.AppName
+			}
+			slog.Info("Successfully installed fnOS app", "app", config.AppName)
+		}
+	}
+	os.RemoveAll(appDir)
+}
+
+// processInstall handles install operation
+func (m *Monitor) processInstall(op *AppOperation) {
+	state, exists := m.containers[op.ContainerID]
+	if !exists {
+		slog.Info("Container no longer tracked, skipping install", "app", op.AppName)
+		os.RemoveAll(op.AppDir)
+		return
+	}
+
+	slog.Info("Installing fnOS app", "app", op.AppName)
+	if m.installer != nil {
+		if err := m.installer.InstallLocal(op.AppDir); err != nil {
+			slog.Error("Failed to install fnOS app", "app", op.AppName, "error", err)
+		} else {
+			state.Installed = true
+			state.AppName = op.AppName
+			slog.Info("Successfully installed fnOS app", "app", op.AppName)
+		}
+	}
+	os.RemoveAll(op.AppDir)
+}
+
+// processStop handles stop operation
+func (m *Monitor) processStop(op *AppOperation) {
+	state, exists := m.containers[op.ContainerID]
+	if !exists || !state.Installed {
+		slog.Debug("Container not tracked or not installed, skipping stop", "id", op.ContainerID)
+		return
+	}
+	slog.Info("Stopping fnOS app", "app", state.AppName)
+	if m.installer != nil {
+		m.installer.StopApp(state.AppName)
+	}
+}
+
+// processDestroy handles destroy operation
+func (m *Monitor) processDestroy(op *AppOperation) {
+	state, exists := m.containers[op.ContainerID]
+	if !exists {
+		slog.Debug("Container not tracked, skipping destroy", "id", op.ContainerID)
+		return
+	}
+
+	appName := state.AppName
+	wasInstalled := state.Installed
+
+	// Remove from tracking
+	delete(m.containers, op.ContainerID)
+
+	// Uninstall if was installed
+	if wasInstalled && m.installer != nil {
+		slog.Info("Uninstalling fnOS app", "app", appName)
+		m.installer.Uninstall(appName)
 	}
 }
 
@@ -174,13 +236,6 @@ func (m *Monitor) queueOperation(op *AppOperation) {
 	default:
 		slog.Warn("Operation queue full, dropping operation", "type", op.Type, "app", op.AppName)
 	}
-}
-
-// queueOperationSync sends an operation and waits for result
-func (m *Monitor) queueOperationSync(op *AppOperation) error {
-	op.ResultCh = make(chan error, 1)
-	m.opQueue <- op
-	return <-op.ResultCh
 }
 
 // Start starts monitoring Docker containers
@@ -251,16 +306,27 @@ func (m *Monitor) handleDockerEvent(ctx context.Context, event events.Message) {
 
 		labels := info.Config.Labels
 		if shouldInstall(labels) {
-			go m.handleContainerStart(ctx, containerID, containerName, labels)
+			m.queueOperation(&AppOperation{
+				Type:          "container_start",
+				ContainerID:   containerID,
+				ContainerName: containerName,
+				Labels:        labels,
+			})
 		}
 
 	case "stop", "die":
 		slog.Info("Container stopped", "container", containerName, "id", containerID)
-		m.handleContainerStop(ctx, containerID, containerName)
+		m.queueOperation(&AppOperation{
+			Type:        "stop",
+			ContainerID: containerID,
+		})
 
 	case "destroy":
 		slog.Info("Container destroyed", "container", containerName, "id", containerID)
-		m.handleContainerDestroy(ctx, containerID, containerName)
+		m.queueOperation(&AppOperation{
+			Type:        "destroy",
+			ContainerID: containerID,
+		})
 	}
 }
 
@@ -285,91 +351,6 @@ func shouldInstall(labels map[string]string) bool {
 	return installMode == "fnos" || installMode == "true" || installMode == ""
 }
 
-// handleContainerStart handles container start event
-func (m *Monitor) handleContainerStart(ctx context.Context, containerID, containerName string, labels map[string]string) {
-	appName := getAppNameFromLabels(labels, containerName)
-
-	// Check if already installed in fnOS
-	if m.installer != nil && m.installer.IsAppInstalled(appName) {
-		// Already installed, register and start it
-		slog.Info("App already installed, starting", "app", appName)
-
-		m.queueOperation(&AppOperation{
-			Type:        "register",
-			ContainerID: containerID,
-			Container: &ContainerState{
-				ContainerID:   containerID,
-				ContainerName: containerName,
-				AppName:       appName,
-				Installed:     true,
-				Labels:        labels,
-			},
-		})
-
-		m.queueOperation(&AppOperation{
-			Type:        "start",
-			AppName:     appName,
-			ContainerID: containerID,
-		})
-		return
-	}
-
-	// Register container state first (before async generation)
-	m.queueOperation(&AppOperation{
-		Type:        "register",
-		ContainerID: containerID,
-		Container: &ContainerState{
-			ContainerID:   containerID,
-			ContainerName: containerName,
-			AppName:       appName,
-			Installed:     false,
-			Labels:        labels,
-		},
-	})
-
-	// Generate app package (can be slow, run in goroutine)
-	go func() {
-		time.Sleep(2 * time.Second)
-
-		config, appDir, err := m.generator.GenerateFromContainer(ctx, containerID)
-		if err != nil {
-			slog.Error("Failed to generate fnOS app", "container", containerName, "error", err)
-			// Queue destroy to clean up state
-			m.queueOperation(&AppOperation{
-				Type:        "destroy",
-				ContainerID: containerID,
-			})
-			return
-		}
-
-		// Queue install - worker will check if container still exists
-		m.queueOperation(&AppOperation{
-			Type:        "install",
-			AppName:     config.AppName,
-			AppDir:      appDir,
-			ContainerID: containerID,
-		})
-	}()
-}
-
-// handleContainerStop handles container stop event (stop app, keep installed)
-func (m *Monitor) handleContainerStop(ctx context.Context, containerID, containerName string) {
-	// Queue stop operation - worker will check state
-	m.queueOperation(&AppOperation{
-		Type:        "stop",
-		ContainerID: containerID,
-	})
-}
-
-// handleContainerDestroy handles container destroy event (uninstall app)
-func (m *Monitor) handleContainerDestroy(ctx context.Context, containerID, containerName string) {
-	// Queue destroy operation - worker will handle state cleanup and uninstall
-	m.queueOperation(&AppOperation{
-		Type:        "destroy",
-		ContainerID: containerID,
-	})
-}
-
 // scanContainers scans all running containers
 func (m *Monitor) scanContainers(ctx context.Context) {
 	containers, err := m.cli.ContainerList(ctx, container.ListOptions{})
@@ -387,17 +368,14 @@ func (m *Monitor) scanContainers(ctx context.Context) {
 		// Check if should be installed
 		if shouldInstall(ctr.Labels) {
 			slog.Info("Found container to install", "container", containerName)
-			go m.handleContainerStart(ctx, containerID, containerName, ctr.Labels)
+			m.queueOperation(&AppOperation{
+				Type:          "container_start",
+				ContainerID:   containerID,
+				ContainerName: containerName,
+				Labels:        ctr.Labels,
+			})
 		}
 	}
-}
-
-// GetContainerStates returns all monitored container states
-// Note: This is a snapshot and may be slightly stale
-func (m *Monitor) GetContainerStates() map[string]*ContainerState {
-	// For now, return empty - this method needs redesign for thread safety
-	// Could implement via a query operation if needed
-	return make(map[string]*ContainerState)
 }
 
 // Stop stops the monitor

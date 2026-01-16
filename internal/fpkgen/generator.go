@@ -7,7 +7,6 @@ import (
 	"os"
 	"path/filepath"
 	"strings"
-	"sync"
 
 	dockercontainer "github.com/docker/docker/api/types/container"
 	"github.com/docker/docker/client"
@@ -15,10 +14,8 @@ import (
 
 // Generator handles fnOS application package generation from Docker containers
 type Generator struct {
-	dockerClient   *client.Client        // Docker API client
-	templateEngine *TemplateEngine       // Template engine for rendering
-	installed      map[string]*AppConfig // map[containerID]AppConfig - installed apps
-	mu             sync.RWMutex          // Protects installed map
+	dockerClient   *client.Client  // Docker API client
+	templateEngine *TemplateEngine // Template engine for rendering
 }
 
 // NewGenerator creates a new application generator
@@ -38,7 +35,6 @@ func NewGenerator() (*Generator, error) {
 	return &Generator{
 		dockerClient:   cli,
 		templateEngine: tmplEngine,
-		installed:      make(map[string]*AppConfig),
 	}, nil
 }
 
@@ -260,46 +256,6 @@ func (g *Generator) createDirectoryStructure(appDir string) error {
 	}
 
 	return nil
-}
-
-// IsInstalled checks if a container has already been installed as fnOS app
-func (g *Generator) IsInstalled(containerID string) bool {
-	g.mu.RLock()
-	defer g.mu.RUnlock()
-	_, exists := g.installed[containerID]
-	return exists
-}
-
-// GetInstalledApp gets the installed app config for a container
-func (g *Generator) GetInstalledApp(containerID string) *AppConfig {
-	g.mu.RLock()
-	defer g.mu.RUnlock()
-	return g.installed[containerID]
-}
-
-// MarkInstalled marks a container as installed
-func (g *Generator) MarkInstalled(containerID string, config *AppConfig) {
-	g.mu.Lock()
-	defer g.mu.Unlock()
-	g.installed[containerID] = config
-}
-
-// MarkUninstalled removes a container from the installed list
-func (g *Generator) MarkUninstalled(containerID string) {
-	g.mu.Lock()
-	defer g.mu.Unlock()
-	delete(g.installed, containerID)
-}
-
-// GetAllInstalled returns all installed apps
-func (g *Generator) GetAllInstalled() map[string]*AppConfig {
-	g.mu.RLock()
-	defer g.mu.RUnlock()
-	result := make(map[string]*AppConfig)
-	for k, v := range g.installed {
-		result[k] = v
-	}
-	return result
 }
 
 // Close closes the Docker client

@@ -138,27 +138,6 @@ func (i *Installer) StopApp(appName string) error {
 	return nil
 }
 
-// ListApps lists all installed applications
-func (i *Installer) ListApps() ([]string, error) {
-	cmd := exec.Command(i.appcenterCLIPath, "list")
-	output, err := cmd.Output()
-	if err != nil {
-		return nil, fmt.Errorf("failed to list apps: %w", err)
-	}
-
-	// Parse output (format depends on appcenter-cli output)
-	lines := strings.Split(string(output), "\n")
-	var apps []string
-	for _, line := range lines {
-		line = strings.TrimSpace(line)
-		if line != "" {
-			apps = append(apps, line)
-		}
-	}
-
-	return apps, nil
-}
-
 // IsAppInstalled checks if an app is installed by parsing appcenter-cli list output
 func (i *Installer) IsAppInstalled(appName string) bool {
 	cmd := exec.Command(i.appcenterCLIPath, "list")
