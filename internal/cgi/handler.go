@@ -7,11 +7,24 @@ import (
 	"html/template"
 	"net/http"
 	"os"
+	"regexp"
 	"strings"
 )
 
 // CGIHandler handles CGI requests for redirect functionality
 type CGIHandler struct{}
+
+// validQueryStringPattern matches safe query string format: key=value(&key=value)*
+// Only allows URL-safe characters to prevent XSS
+var validQueryStringPattern = regexp.MustCompile(`^([a-zA-Z0-9_~.%-]+=[a-zA-Z0-9_~.%/-]*(&[a-zA-Z0-9_~.%-]+=[a-zA-Z0-9_~.%/-]*)*)?$`)
+
+// sanitizeQueryString validates and returns query string, empty if invalid
+func sanitizeQueryString(qs string) string {
+	if validQueryStringPattern.MatchString(qs) {
+		return qs
+	}
+	return ""
+}
 
 // NewCGIHandler creates a new CGI handler
 func NewCGIHandler() *CGIHandler {
@@ -80,8 +93,8 @@ func (h *CGIHandler) HandleCGI() {
 		return
 	}
 
-	// Get query string from CGI environment
-	queryString := os.Getenv("QUERY_STRING")
+	// Get query string from CGI environment and sanitize
+	queryString := sanitizeQueryString(os.Getenv("QUERY_STRING"))
 
 	h.outputHTML(params.Host, params.Port, path, queryString)
 }
@@ -174,7 +187,7 @@ func (h *CGIHandler) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 		RedirectHost:  params.Host,
 		ContainerPort: params.Port,
 		Path:          path,
-		QueryString:   r.URL.RawQuery,
+		QueryString:   sanitizeQueryString(r.URL.RawQuery),
 	}
 	tmpl.Execute(w, data)
 }
@@ -240,7 +253,7 @@ const redirectPageTemplate = `<!DOCTYPE html>
         const REDIRECT_HOST = '{{.RedirectHost | js}}';
         const CONTAINER_PORT = '{{.ContainerPort | js}}';
         const PATH = '{{.Path | js}}';
-        const QUERY_STRING = '{{.QueryString | js}}';
+        const QUERY_STRING = '{{.QueryString}}'; // Already sanitized by backend regex
 
         const statusEl = document.getElementById('status');
         const errorEl = document.getElementById('error');
