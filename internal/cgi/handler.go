@@ -80,7 +80,10 @@ func (h *CGIHandler) HandleCGI() {
 		return
 	}
 
-	h.outputHTML(params.Host, params.Port, path)
+	// Get query string from CGI environment
+	queryString := os.Getenv("QUERY_STRING")
+
+	h.outputHTML(params.Host, params.Port, path, queryString)
 }
 
 // outputError outputs an error page
@@ -92,7 +95,7 @@ func (h *CGIHandler) outputError(msg string) {
 }
 
 // outputHTML outputs the redirect HTML page with JavaScript
-func (h *CGIHandler) outputHTML(redirectHost, containerPort, path string) {
+func (h *CGIHandler) outputHTML(redirectHost, containerPort, path, queryString string) {
 	fmt.Println("Content-Type: text/html; charset=utf-8")
 	fmt.Println("Status: 200 OK")
 	fmt.Println()
@@ -106,10 +109,12 @@ func (h *CGIHandler) outputHTML(redirectHost, containerPort, path string) {
 		RedirectHost  string
 		ContainerPort string
 		Path          string
+		QueryString   string
 	}{
 		RedirectHost:  redirectHost,
 		ContainerPort: containerPort,
 		Path:          path,
+		QueryString:   queryString,
 	}
 
 	if err := tmpl.Execute(os.Stdout, data); err != nil {
@@ -164,10 +169,12 @@ func (h *CGIHandler) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 		RedirectHost  string
 		ContainerPort string
 		Path          string
+		QueryString   string
 	}{
 		RedirectHost:  params.Host,
 		ContainerPort: params.Port,
 		Path:          path,
+		QueryString:   r.URL.RawQuery,
 	}
 	tmpl.Execute(w, data)
 }
@@ -233,6 +240,7 @@ const redirectPageTemplate = `<!DOCTYPE html>
         const REDIRECT_HOST = '{{.RedirectHost | js}}';
         const CONTAINER_PORT = '{{.ContainerPort | js}}';
         const PATH = '{{.Path | js}}';
+        const QUERY_STRING = '{{.QueryString | js}}';
 
         const statusEl = document.getElementById('status');
         const errorEl = document.getElementById('error');
@@ -251,28 +259,39 @@ const redirectPageTemplate = `<!DOCTYPE html>
             window.location.replace(url);
         }
 
+        // Append query string to URL
+        function appendQueryString(url) {
+            if (QUERY_STRING) {
+                return url + '?' + QUERY_STRING;
+            }
+            return url;
+        }
+
         // Build local URL using current hostname with container port
         function buildLocalURL() {
             const hostname = window.location.hostname;
             const protocol = window.location.protocol;
-            return protocol + '//' + hostname + ':' + CONTAINER_PORT + PATH;
+            return appendQueryString(protocol + '//' + hostname + ':' + CONTAINER_PORT + PATH);
         }
 
         // Build external URL using redirect host
         function buildExternalURL() {
+            let url;
             // If redirect host already has protocol, use it directly
             if (REDIRECT_HOST.startsWith('http://') || REDIRECT_HOST.startsWith('https://')) {
-                let url = REDIRECT_HOST;
+                url = REDIRECT_HOST;
                 if (!url.endsWith('/') && !PATH.startsWith('/')) {
                     url += '/';
                 } else if (url.endsWith('/') && PATH.startsWith('/')) {
                     url = url.slice(0, -1);
                 }
-                return url + PATH;
+                url += PATH;
+            } else {
+                // Otherwise use same protocol as current page
+                const protocol = window.location.protocol;
+                url = protocol + '//' + REDIRECT_HOST + PATH;
             }
-            // Otherwise use same protocol as current page
-            const protocol = window.location.protocol;
-            return protocol + '//' + REDIRECT_HOST + PATH;
+            return appendQueryString(url);
         }
 
         // Check if we're on a private/local network

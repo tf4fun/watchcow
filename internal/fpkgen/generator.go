@@ -551,6 +551,10 @@ func parseEntries(labels map[string]string, displayName string, defaultIcon stri
 	// Parse named entries
 	for name := range entryNames {
 		entry := parseEntry(labels, name, displayName, defaultIcon)
+		// Use container's first port as fallback if not specified
+		if entry.Port == "" {
+			entry.Port = defaultPort
+		}
 		entries = append(entries, entry)
 	}
 

@@ -560,8 +560,8 @@ func TestParseEntries_Redirect(t *testing.T) {
 func TestParseEntries_NamedEntryRedirect(t *testing.T) {
 	labels := map[string]string{
 		"watchcow.enable":         "true",
-		"watchcow.admin.port":     "8081",
 		"watchcow.admin.redirect": "admin.example.com",
+		// Note: no service_port specified, should inherit defaultPort
 	}
 
 	entries := parseEntries(labels, "Test App", "https://default.icon/icon.png", "9090")
@@ -579,6 +579,10 @@ func TestParseEntries_NamedEntryRedirect(t *testing.T) {
 	}
 	if adminEntry.Redirect != "admin.example.com" {
 		t.Errorf("expected redirect 'admin.example.com', got %q", adminEntry.Redirect)
+	}
+	// Named entry without service_port should inherit defaultPort
+	if adminEntry.Port != "9090" {
+		t.Errorf("expected port '9090' (inherited from defaultPort), got %q", adminEntry.Port)
 	}
 }
 
