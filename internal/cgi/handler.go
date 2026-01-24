@@ -6,6 +6,7 @@ import (
 	"fmt"
 	"html/template"
 	"net/http"
+	"net/url"
 	"os"
 	"regexp"
 	"strings"
@@ -24,6 +25,45 @@ func sanitizeQueryString(qs string) string {
 		return qs
 	}
 	return ""
+}
+
+// parsedRedirect holds parsed redirect URL components
+type parsedRedirect struct {
+	Base  string // scheme + host[:port], e.g., "https://example.com" or "example.com:8080"
+	Path  string // path component, e.g., "/api/v1"
+	Query string // query string without '?', e.g., "x=1&y=2"
+}
+
+// parseRedirectHost parses redirect host which may contain path and query
+// Uses url.Parse for robust URL parsing
+func parseRedirectHost(host string) parsedRedirect {
+	result := parsedRedirect{}
+
+	// Add scheme if missing for url.Parse to work correctly
+	urlStr := host
+	hasScheme := strings.HasPrefix(host, "http://") || strings.HasPrefix(host, "https://")
+	if !hasScheme {
+		urlStr = "http://" + host // temporary scheme for parsing
+	}
+
+	u, err := url.Parse(urlStr)
+	if err != nil {
+		// Fallback: treat entire string as base
+		result.Base = host
+		return result
+	}
+
+	// Build base (scheme + host)
+	if hasScheme {
+		result.Base = u.Scheme + "://" + u.Host
+	} else {
+		result.Base = u.Host // without scheme
+	}
+
+	result.Path = u.Path
+	result.Query = sanitizeQueryString(u.RawQuery)
+
+	return result
 }
 
 // NewCGIHandler creates a new CGI handler
@@ -93,7 +133,7 @@ func (h *CGIHandler) HandleCGI() {
 		return
 	}
 
-	// Get query string from CGI environment and sanitize
+	// Sanitize query string
 	queryString := sanitizeQueryString(os.Getenv("QUERY_STRING"))
 
 	h.outputHTML(params.Host, params.Port, path, queryString)
@@ -107,24 +147,37 @@ func (h *CGIHandler) outputError(msg string) {
 	fmt.Printf("<html><body><h1>Error</h1><p>%s</p></body></html>\n", msg)
 }
 
+// templateData holds all data for the redirect page template
+type templateData struct {
+	// Redirect host components (parsed from config)
+	RedirectBase  string // scheme + host[:port]
+	RedirectPath  string // base path from redirect config
+	RedirectQuery string // query string from redirect config
+	// Container info
+	ContainerPort string
+	// Request components
+	Path        string // path from CGI request
+	QueryString string // query string from CGI request
+}
+
 // outputHTML outputs the redirect HTML page with JavaScript
 func (h *CGIHandler) outputHTML(redirectHost, containerPort, path, queryString string) {
 	fmt.Println("Content-Type: text/html; charset=utf-8")
 	fmt.Println("Status: 200 OK")
 	fmt.Println()
 
+	// Parse redirect host to extract base, path, and query
+	parsed := parseRedirectHost(redirectHost)
+
 	// Create template with js escape function
 	funcMap := template.FuncMap{
 		"js": template.JSEscapeString,
 	}
 	tmpl := template.Must(template.New("redirect").Funcs(funcMap).Parse(redirectPageTemplate))
-	data := struct {
-		RedirectHost  string
-		ContainerPort string
-		Path          string
-		QueryString   string
-	}{
-		RedirectHost:  redirectHost,
+	data := templateData{
+		RedirectBase:  parsed.Base,
+		RedirectPath:  parsed.Path,
+		RedirectQuery: parsed.Query,
 		ContainerPort: containerPort,
 		Path:          path,
 		QueryString:   queryString,
@@ -174,17 +227,17 @@ func (h *CGIHandler) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 	w.Header().Set("Content-Type", "text/html; charset=utf-8")
 	w.WriteHeader(http.StatusOK)
 
+	// Parse redirect host
+	parsed := parseRedirectHost(params.Host)
+
 	funcMap := template.FuncMap{
 		"js": template.JSEscapeString,
 	}
 	tmpl := template.Must(template.New("redirect").Funcs(funcMap).Parse(redirectPageTemplate))
-	data := struct {
-		RedirectHost  string
-		ContainerPort string
-		Path          string
-		QueryString   string
-	}{
-		RedirectHost:  params.Host,
+	data := templateData{
+		RedirectBase:  parsed.Base,
+		RedirectPath:  parsed.Path,
+		RedirectQuery: parsed.Query,
 		ContainerPort: params.Port,
 		Path:          path,
 		QueryString:   sanitizeQueryString(r.URL.RawQuery),
@@ -250,10 +303,15 @@ const redirectPageTemplate = `<!DOCTYPE html>
 
     <script>
     (function() {
-        const REDIRECT_HOST = '{{.RedirectHost | js}}';
+        // Redirect host components (from config, may include path and query)
+        const REDIRECT_BASE = '{{.RedirectBase | js}}';   // e.g., "https://example.com" or "example.com:8080"
+        const REDIRECT_PATH = '{{.RedirectPath}}';        // e.g., "/api/v1" (sanitized)
+        const REDIRECT_QUERY = '{{.RedirectQuery}}';      // e.g., "x=1" (sanitized)
+        // Container info
         const CONTAINER_PORT = '{{.ContainerPort | js}}';
-        const PATH = '{{.Path | js}}';
-        const QUERY_STRING = '{{.QueryString}}'; // Already sanitized by backend regex
+        // Request components
+        const PATH = '{{.Path}}';                         // e.g., "/path2" (sanitized)
+        const QUERY_STRING = '{{.QueryString}}';          // e.g., "y=2" (sanitized)
 
         const statusEl = document.getElementById('status');
         const errorEl = document.getElementById('error');
@@ -272,39 +330,53 @@ const redirectPageTemplate = `<!DOCTYPE html>
             window.location.replace(url);
         }
 
-        // Append query string to URL
-        function appendQueryString(url) {
-            if (QUERY_STRING) {
-                return url + '?' + QUERY_STRING;
-            }
-            return url;
+        // Merge two paths: /path1 + /path2 = /path1/path2
+        function mergePaths(basePath, extraPath) {
+            if (!basePath && !extraPath) return '/';
+            if (!basePath) return extraPath;
+            if (!extraPath || extraPath === '/') return basePath;
+            // Remove trailing slash from base, keep leading slash on extra
+            const base = basePath.endsWith('/') ? basePath.slice(0, -1) : basePath;
+            const extra = extraPath.startsWith('/') ? extraPath : '/' + extraPath;
+            return base + extra;
+        }
+
+        // Merge two query strings: x=1 + y=2 = x=1&y=2
+        function mergeQueryStrings(q1, q2) {
+            if (!q1 && !q2) return '';
+            if (!q1) return q2;
+            if (!q2) return q1;
+            return q1 + '&' + q2;
         }
 
         // Build local URL using current hostname with container port
         function buildLocalURL() {
             const hostname = window.location.hostname;
             const protocol = window.location.protocol;
-            return appendQueryString(protocol + '//' + hostname + ':' + CONTAINER_PORT + PATH);
+            let url = protocol + '//' + hostname + ':' + CONTAINER_PORT + PATH;
+            if (QUERY_STRING) {
+                url += '?' + QUERY_STRING;
+            }
+            return url;
         }
 
-        // Build external URL using redirect host
+        // Build external URL with path and query merging
         function buildExternalURL() {
-            let url;
-            // If redirect host already has protocol, use it directly
-            if (REDIRECT_HOST.startsWith('http://') || REDIRECT_HOST.startsWith('https://')) {
-                url = REDIRECT_HOST;
-                if (!url.endsWith('/') && !PATH.startsWith('/')) {
-                    url += '/';
-                } else if (url.endsWith('/') && PATH.startsWith('/')) {
-                    url = url.slice(0, -1);
-                }
-                url += PATH;
-            } else {
-                // Otherwise use same protocol as current page
-                const protocol = window.location.protocol;
-                url = protocol + '//' + REDIRECT_HOST + PATH;
+            let base = REDIRECT_BASE;
+            // Add protocol if missing
+            if (!base.startsWith('http://') && !base.startsWith('https://')) {
+                base = window.location.protocol + '//' + base;
             }
-            return appendQueryString(url);
+            // Merge paths
+            const mergedPath = mergePaths(REDIRECT_PATH, PATH);
+            // Merge query strings
+            const mergedQuery = mergeQueryStrings(REDIRECT_QUERY, QUERY_STRING);
+
+            let url = base + mergedPath;
+            if (mergedQuery) {
+                url += '?' + mergedQuery;
+            }
+            return url;
         }
 
         // Check if we're on a private/local network
