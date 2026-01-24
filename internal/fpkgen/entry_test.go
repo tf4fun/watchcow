@@ -1,7 +1,9 @@
 package fpkgen
 
 import (
+	"encoding/base64"
 	"encoding/json"
+	"strings"
 	"testing"
 )
 
@@ -288,9 +290,10 @@ func TestParseEntries_Control(t *testing.T) {
 	// Find default entry
 	var defaultEntry, adminEntry *Entry
 	for i := range entries {
-		if entries[i].Name == "" {
+		switch entries[i].Name {
+		case "":
 			defaultEntry = &entries[i]
-		} else if entries[i].Name == "admin" {
+		case "admin":
 			adminEntry = &entries[i]
 		}
 	}
@@ -533,12 +536,187 @@ func TestHasDefaultEntry(t *testing.T) {
 	}
 }
 
+// TestParseEntries_Redirect tests redirect label parsing
+func TestParseEntries_Redirect(t *testing.T) {
+	labels := map[string]string{
+		"watchcow.enable":       "true",
+		"watchcow.service_port": "8080",
+		"watchcow.redirect":     "example.com:8080",
+	}
+
+	entries := parseEntries(labels, "Test App", "https://default.icon/icon.png", "9090")
+
+	if len(entries) != 1 {
+		t.Fatalf("expected 1 entry, got %d", len(entries))
+	}
+
+	e := entries[0]
+	if e.Redirect != "example.com:8080" {
+		t.Errorf("expected redirect 'example.com:8080', got %q", e.Redirect)
+	}
+}
+
+// TestParseEntries_NamedEntryRedirect tests redirect label parsing for named entries
+func TestParseEntries_NamedEntryRedirect(t *testing.T) {
+	labels := map[string]string{
+		"watchcow.enable":         "true",
+		"watchcow.admin.port":     "8081",
+		"watchcow.admin.redirect": "admin.example.com",
+	}
+
+	entries := parseEntries(labels, "Test App", "https://default.icon/icon.png", "9090")
+
+	var adminEntry *Entry
+	for i := range entries {
+		if entries[i].Name == "admin" {
+			adminEntry = &entries[i]
+			break
+		}
+	}
+
+	if adminEntry == nil {
+		t.Fatal("admin entry not found")
+	}
+	if adminEntry.Redirect != "admin.example.com" {
+		t.Errorf("expected redirect 'admin.example.com', got %q", adminEntry.Redirect)
+	}
+}
+
+// TestGenerateUIConfigJSON_Redirect tests JSON generation with redirect mode
+func TestGenerateUIConfigJSON_Redirect(t *testing.T) {
+	config := &AppConfig{
+		AppName:     "watchcow.testapp",
+		DisplayName: "Test App",
+		Entries: []Entry{
+			{
+				Name:     "",
+				Title:    "Test App",
+				Protocol: "http",
+				Port:     "8080",
+				Path:     "/dashboard",
+				UIType:   "url",
+				AllUsers: true,
+				Icon:     "https://example.com/icon.png",
+				Redirect: "https://external.example.com",
+			},
+		},
+	}
+
+	data := NewTemplateData(config)
+	jsonBytes, err := GenerateUIConfigJSON(data)
+	if err != nil {
+		t.Fatalf("GenerateUIConfigJSON failed: %v", err)
+	}
+
+	var result UIConfig
+	if err := json.Unmarshal(jsonBytes, &result); err != nil {
+		t.Fatalf("failed to parse generated JSON: %v", err)
+	}
+
+	entry, ok := result.URL["watchcow.testapp"]
+	if !ok {
+		t.Fatal("entry 'watchcow.testapp' not found in JSON")
+	}
+
+	// Port should not be present in redirect mode (omitempty)
+	if entry.Port != "" {
+		t.Errorf("expected empty port in redirect mode, got %q", entry.Port)
+	}
+
+	// Verify port key is not in the raw JSON
+	if strings.Contains(string(jsonBytes), `"port"`) {
+		t.Errorf("port field should not be present in JSON when redirect mode is enabled")
+	}
+
+	// URL should be CGI path with base64 encoded JSON params
+	// Check that URL starts with expected prefix and contains base64
+	expectedPrefix := "/cgi/ThirdParty/watchcow.testapp/index.cgi/"
+	if !strings.HasPrefix(entry.URL, expectedPrefix) {
+		t.Errorf("URL should start with %q, got %q", expectedPrefix, entry.URL)
+	}
+
+	// Verify URL ends with path
+	if !strings.HasSuffix(entry.URL, "/dashboard") {
+		t.Errorf("URL should end with /dashboard, got %q", entry.URL)
+	}
+
+	// Extract and verify base64 params
+	remaining := strings.TrimPrefix(entry.URL, expectedPrefix)
+	base64Part := strings.TrimSuffix(remaining, "/dashboard")
+	decoded, err := base64.URLEncoding.DecodeString(base64Part)
+	if err != nil {
+		t.Fatalf("failed to decode base64: %v", err)
+	}
+	var params map[string]string
+	if err := json.Unmarshal(decoded, &params); err != nil {
+		t.Fatalf("failed to parse JSON: %v", err)
+	}
+	if params["h"] != "https://external.example.com" {
+		t.Errorf("expected h='https://external.example.com', got %q", params["h"])
+	}
+	if params["p"] != "8080" {
+		t.Errorf("expected p='8080', got %q", params["p"])
+	}
+}
+
+// TestGenerateUIConfigJSON_RedirectWithRootPath tests redirect mode with root path
+func TestGenerateUIConfigJSON_RedirectWithRootPath(t *testing.T) {
+	config := &AppConfig{
+		AppName: "watchcow.app",
+		Entries: []Entry{
+			{
+				Name:     "",
+				Port:     "3000",
+				Path:     "/",
+				Redirect: "https://myapp.example.com:8443",
+			},
+		},
+	}
+
+	data := NewTemplateData(config)
+	jsonBytes, err := GenerateUIConfigJSON(data)
+	if err != nil {
+		t.Fatalf("GenerateUIConfigJSON failed: %v", err)
+	}
+
+	var result UIConfig
+	if err := json.Unmarshal(jsonBytes, &result); err != nil {
+		t.Fatalf("failed to parse generated JSON: %v", err)
+	}
+
+	entry := result.URL["watchcow.app"]
+
+	// URL should be CGI path with base64 encoded JSON params (no trailing path for root)
+	expectedPrefix := "/cgi/ThirdParty/watchcow.app/index.cgi/"
+	if !strings.HasPrefix(entry.URL, expectedPrefix) {
+		t.Errorf("URL should start with %q, got %q", expectedPrefix, entry.URL)
+	}
+
+	// Extract and verify base64 params
+	base64Part := strings.TrimPrefix(entry.URL, expectedPrefix)
+	decoded, err := base64.URLEncoding.DecodeString(base64Part)
+	if err != nil {
+		t.Fatalf("failed to decode base64: %v", err)
+	}
+	var params map[string]string
+	if err := json.Unmarshal(decoded, &params); err != nil {
+		t.Fatalf("failed to parse JSON: %v", err)
+	}
+	if params["h"] != "https://myapp.example.com:8443" {
+		t.Errorf("expected h='https://myapp.example.com:8443', got %q", params["h"])
+	}
+	if params["p"] != "3000" {
+		t.Errorf("expected p='3000', got %q", params["p"])
+	}
+}
+
 // TestIsEntryField tests isEntryField function
 func TestIsEntryField(t *testing.T) {
 	validFields := []string{
 		"service_port", "protocol", "path", "ui_type",
 		"all_users", "icon", "title", "file_types", "no_display",
 		"control.access_perm", "control.port_perm", "control.path_perm",
+		"redirect",
 	}
 
 	for _, field := range validFields {

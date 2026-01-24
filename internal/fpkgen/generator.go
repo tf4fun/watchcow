@@ -140,8 +140,14 @@ func (g *Generator) generateFromTemplates(appDir string, data *TemplateData) err
 		return fmt.Errorf("failed to write UI config: %w", err)
 	}
 
-	// Generate empty cmd scripts
-	cmdScripts := []string{"install_init", "install_callback", "uninstall_init", "uninstall_callback",
+	// Generate install_callback with CGI symlink support
+	installCallbackPath := filepath.Join(appDir, "cmd", "install_callback")
+	if err := g.templateEngine.RenderToFile("cmd_install_callback.tmpl", installCallbackPath, data, 0755); err != nil {
+		return fmt.Errorf("failed to generate cmd/install_callback: %w", err)
+	}
+
+	// Generate other empty cmd scripts
+	cmdScripts := []string{"install_init", "uninstall_init", "uninstall_callback",
 		"upgrade_init", "upgrade_callback", "config_init", "config_callback"}
 	for _, script := range cmdScripts {
 		filePath := filepath.Join(appDir, "cmd", script)
@@ -217,6 +223,7 @@ func (g *Generator) extractConfig(container *dockercontainer.InspectResponse) *A
 			FileTypes: nil,
 			NoDisplay: getLabel(labels, "watchcow.no_display", "false") == "true",
 			Control:   nil,
+			Redirect:  getLabel(labels, "watchcow.redirect", ""),
 		}}
 	}
 
@@ -416,6 +423,7 @@ var entryFields = map[string]bool{
 	"control.access_perm": true,
 	"control.port_perm":   true,
 	"control.path_perm":   true,
+	"redirect":            true,
 }
 
 // isEntryField checks if a field name is an entry configuration field
@@ -506,6 +514,7 @@ func parseEntry(labels map[string]string, name string, displayName string, defau
 		FileTypes: fileTypes,
 		NoDisplay: getLabel(labels, prefix+"no_display", "false") == "true",
 		Control:   control,
+		Redirect:  getLabel(labels, prefix+"redirect", ""),
 	}
 }
 

@@ -20,6 +20,7 @@ type Entry struct {
 	FileTypes []string      // Supported file types for right-click menu
 	NoDisplay bool          // Hide from desktop (only show in right-click menu)
 	Control   *EntryControl // Permission control settings
+	Redirect  string        // External redirect host for CGI mode (watchcow.redirect)
 }
 
 // AppConfig holds all configuration for generating an fnOS app

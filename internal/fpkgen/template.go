@@ -3,6 +3,7 @@ package fpkgen
 import (
 	"bytes"
 	"embed"
+	"encoding/base64"
 	"encoding/json"
 	"fmt"
 	"os"
@@ -105,7 +106,7 @@ type UIConfigEntry struct {
 	Icon      string           `json:"icon"`
 	Type      string           `json:"type"`
 	Protocol  string           `json:"protocol"`
-	Port      string           `json:"port"`
+	Port      string           `json:"port,omitempty"`
 	URL       string           `json:"url"`
 	AllUsers  bool             `json:"allUsers"`
 	FileTypes []string         `json:"fileTypes,omitempty"`
@@ -134,13 +135,36 @@ func GenerateUIConfigJSON(data *TemplateData) ([]byte, error) {
 			}
 		}
 
+		port := entry.Port
+		urlPath := entry.Path
+
+		// If redirect mode is enabled, modify port and URL
+		if entry.Redirect != "" {
+			// Remove port (omitempty will exclude it from JSON)
+			port = ""
+			// Build CGI URL: /cgi/ThirdParty/<AppName>/index.cgi/<base64_json>[<path>]
+			// JSON: {"h":"<redirect_host>","p":"<container_port>"}
+			params := map[string]string{
+				"h": entry.Redirect,
+				"p": entry.Port,
+			}
+			paramsJSON, _ := json.Marshal(params)
+			paramsBase64 := base64.URLEncoding.EncodeToString(paramsJSON)
+
+			cgiPath := "/cgi/ThirdParty/" + data.AppName + "/index.cgi/" + paramsBase64
+			if entry.Path != "" && entry.Path != "/" {
+				cgiPath += entry.Path
+			}
+			urlPath = cgiPath
+		}
+
 		config.URL[entry.FullName] = &UIConfigEntry{
 			Title:     entry.Title,
 			Icon:      entry.Icon,
 			Type:      entry.UIType,
 			Protocol:  entry.Protocol,
-			Port:      entry.Port,
-			URL:       entry.Path,
+			Port:      port,
+			URL:       urlPath,
 			AllUsers:  entry.AllUsers,
 			FileTypes: entry.FileTypes,
 			NoDisplay: entry.NoDisplay,
@@ -172,6 +196,7 @@ type EntryData struct {
 	FileTypes []string          // Supported file types
 	NoDisplay bool              // Hide from desktop
 	Control   *EntryControlData // Permission control
+	Redirect  string            // External redirect host for CGI mode
 }
 
 // TemplateData holds all data needed for template rendering
@@ -207,6 +232,10 @@ type TemplateData struct {
 	// Other
 	RestartPolicy string
 	Icon          string
+
+	// CGI redirect mode
+	HasRedirect     bool   // True if any entry uses redirect mode
+	WatchCowAppDest string // TRIM_APPDEST of watchcow package (for CGI symlink)
 }
 
 // NewTemplateData creates TemplateData from AppConfig
@@ -302,16 +331,27 @@ func NewTemplateData(config *AppConfig) *TemplateData {
 			FileTypes: entry.FileTypes,
 			NoDisplay: entry.NoDisplay,
 			Control:   controlData,
+			Redirect:  entry.Redirect,
 		})
 
 		// Track first displayable entry for default launch entry
 		if defaultLaunchEntry == "" && !entry.NoDisplay {
 			defaultLaunchEntry = fullName
 		}
+
+		// Track if any entry uses redirect mode
+		if entry.Redirect != "" {
+			data.HasRedirect = true
+		}
 	}
 
 	// Set default launch entry to first displayable entry's full name
 	data.DefaultLaunchEntry = defaultLaunchEntry
+
+	// Set WatchCow's TRIM_APPDEST for CGI symlink
+	if data.HasRedirect {
+		data.WatchCowAppDest = os.Getenv("TRIM_APPDEST")
+	}
 
 	return data
 }

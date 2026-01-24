@@ -6,12 +6,33 @@ import (
 	"log/slog"
 	"os"
 	"os/signal"
+	"path/filepath"
+	"strings"
 	"syscall"
 
+	"watchcow/internal/cgi"
 	"watchcow/internal/docker"
 )
 
 func main() {
+	// Check if running as CGI (via symlink like index.cgi -> watchcow)
+	execName := filepath.Base(os.Args[0])
+	if strings.HasSuffix(execName, ".cgi") || strings.Contains(execName, "cgi") {
+		runCGIMode()
+		return
+	}
+
+	runDaemonMode()
+}
+
+// runCGIMode handles CGI requests for redirect functionality
+func runCGIMode() {
+	handler := cgi.NewCGIHandler()
+	handler.HandleCGI()
+}
+
+// runDaemonMode runs the Docker monitoring daemon
+func runDaemonMode() {
 	// Parse command line flags
 	debug := flag.Bool("debug", false, "Enable debug mode")
 	flag.Parse()
