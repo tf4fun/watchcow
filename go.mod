@@ -4,6 +4,7 @@ go 1.25.0
 
 require (
 	github.com/docker/docker v28.5.2+incompatible
+	github.com/go-chi/chi/v5 v5.2.4
 	golang.org/x/image v0.33.0
 )
 

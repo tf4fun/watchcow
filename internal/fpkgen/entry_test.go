@@ -634,7 +634,7 @@ func TestGenerateUIConfigJSON_Redirect(t *testing.T) {
 
 	// URL should be CGI path with base64 encoded JSON params
 	// Check that URL starts with expected prefix and contains base64
-	expectedPrefix := "/cgi/ThirdParty/watchcow.testapp/index.cgi/"
+	expectedPrefix := "/cgi/ThirdParty/watchcow.testapp/index.cgi/redirect/"
 	if !strings.HasPrefix(entry.URL, expectedPrefix) {
 		t.Errorf("URL should start with %q, got %q", expectedPrefix, entry.URL)
 	}
@@ -691,7 +691,7 @@ func TestGenerateUIConfigJSON_RedirectWithRootPath(t *testing.T) {
 	entry := result.URL["watchcow.app"]
 
 	// URL should be CGI path with base64 encoded JSON params (no trailing path for root)
-	expectedPrefix := "/cgi/ThirdParty/watchcow.app/index.cgi/"
+	expectedPrefix := "/cgi/ThirdParty/watchcow.app/index.cgi/redirect/"
 	if !strings.HasPrefix(entry.URL, expectedPrefix) {
 		t.Errorf("URL should start with %q, got %q", expectedPrefix, entry.URL)
 	}

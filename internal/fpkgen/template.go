@@ -142,7 +142,7 @@ func GenerateUIConfigJSON(data *TemplateData) ([]byte, error) {
 		if entry.Redirect != "" {
 			// Remove port (omitempty will exclude it from JSON)
 			port = ""
-			// Build CGI URL: /cgi/ThirdParty/<AppName>/index.cgi/<base64_json>[<path>]
+			// Build CGI URL: /cgi/ThirdParty/<AppName>/index.cgi/redirect/<base64_json>[<path>]
 			// JSON: {"h":"<redirect_host>","p":"<container_port>"}
 			params := map[string]string{
 				"h": entry.Redirect,
@@ -151,7 +151,7 @@ func GenerateUIConfigJSON(data *TemplateData) ([]byte, error) {
 			paramsJSON, _ := json.Marshal(params)
 			paramsBase64 := base64.URLEncoding.EncodeToString(paramsJSON)
 
-			cgiPath := "/cgi/ThirdParty/" + data.AppName + "/index.cgi/" + paramsBase64
+			cgiPath := "/cgi/ThirdParty/" + data.AppName + "/index.cgi/redirect/" + paramsBase64
 			if entry.Path != "" && entry.Path != "/" {
 				cgiPath += entry.Path
 			}

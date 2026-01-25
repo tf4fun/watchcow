@@ -18,13 +18,13 @@ import (
 
 // AppOperation represents an operation to be processed serially
 type AppOperation struct {
-	Type        string            // "install", "start", "stop", "destroy", "container_start"
-	AppName     string
-	AppDir      string
-	ContainerID string
+	Type          string // "install", "start", "stop", "destroy", "container_start"
+	AppName       string
+	AppDir        string
+	ContainerID   string
 	ContainerName string
-	Labels      map[string]string
-	ResultCh    chan error
+	Labels        map[string]string
+	ResultCh      chan error
 }
 
 // Monitor watches Docker containers and manages fnOS app installation

@@ -12,6 +12,7 @@ import (
 
 	"watchcow/internal/cgi"
 	"watchcow/internal/docker"
+	"watchcow/internal/server"
 )
 
 func main() {
@@ -48,8 +49,8 @@ func runDaemonMode() {
 	opts := &slog.HandlerOptions{
 		Level: logLevel,
 	}
-	handler := slog.NewTextHandler(os.Stdout, opts)
-	logger := slog.New(handler)
+	logHandler := slog.NewTextHandler(os.Stdout, opts)
+	logger := slog.New(logHandler)
 	slog.SetDefault(logger)
 
 	slog.Info("WatchCow - fnOS App Generator for Docker")
@@ -63,16 +64,31 @@ func runDaemonMode() {
 	sigChan := make(chan os.Signal, 1)
 	signal.Notify(sigChan, os.Interrupt, syscall.SIGTERM)
 
-	// Create and start Docker monitor
+	// Step 1: Create Docker monitor first
 	monitor, err := docker.NewMonitor()
 	if err != nil {
 		slog.Error("Failed to create Docker monitor", "error", err)
 		os.Exit(1)
 	}
-	defer monitor.Stop()
 
-	// Start monitoring
-	go monitor.Start(ctx)
+	// Step 2: Create HTTP handler and router
+	socketPath := server.GetSocketPath()
+	redirectHandler := server.NewRedirectHandler()
+	router := server.NewRouter(redirectHandler)
+
+	// Step 3: Create server with monitor injected
+	srv := server.New(socketPath, router, monitor)
+
+	// Step 4: Start server (which will start monitor after socket is ready)
+	go func() {
+		if err := srv.Start(ctx); err != nil {
+			slog.Error("Server error", "error", err)
+			cancel()
+		}
+	}()
+
+	// Wait for server to be ready
+	<-srv.Ready()
 
 	slog.Info("Monitoring started (Press Ctrl+C to stop)")
 	slog.Info("")
@@ -85,4 +101,7 @@ func runDaemonMode() {
 	// Wait for shutdown signal
 	<-sigChan
 	slog.Info("Shutting down...")
+
+	// Stop server (which stops monitor too)
+	srv.Stop(context.Background())
 }
