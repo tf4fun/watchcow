@@ -105,20 +105,27 @@ func (h *RedirectHandler) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 		path = "/"
 	}
 
-	// Decode base64
-	jsonBytes, err := base64.URLEncoding.DecodeString(base64Part)
+	// Decode base64 - try multiple encodings for compatibility
+	// Priority: RawURLEncoding (no padding) > URLEncoding (with padding) > StdEncoding
+	jsonBytes, err := base64.RawURLEncoding.DecodeString(base64Part)
 	if err != nil {
-		jsonBytes, err = base64.StdEncoding.DecodeString(base64Part)
+		jsonBytes, err = base64.URLEncoding.DecodeString(base64Part)
 		if err != nil {
-			h.outputError(w, http.StatusBadRequest, "Invalid base64 encoding")
-			return
+			jsonBytes, err = base64.RawStdEncoding.DecodeString(base64Part)
+			if err != nil {
+				jsonBytes, err = base64.StdEncoding.DecodeString(base64Part)
+				if err != nil {
+					h.outputError(w, http.StatusBadRequest, "Invalid base64 encoding")
+					return
+				}
+			}
 		}
 	}
 
 	// Parse JSON
 	var params redirectParams
 	if err := json.Unmarshal(jsonBytes, &params); err != nil {
-		h.outputError(w, http.StatusBadRequest, "Invalid JSON")
+		h.outputError(w, http.StatusBadRequest, fmt.Sprintf("Invalid JSON: %v (decoded: %s)", err, string(jsonBytes)))
 		return
 	}
 

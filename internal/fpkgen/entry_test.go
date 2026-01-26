@@ -647,7 +647,7 @@ func TestGenerateUIConfigJSON_Redirect(t *testing.T) {
 	// Extract and verify base64 params
 	remaining := strings.TrimPrefix(entry.URL, expectedPrefix)
 	base64Part := strings.TrimSuffix(remaining, "/dashboard")
-	decoded, err := base64.URLEncoding.DecodeString(base64Part)
+	decoded, err := base64.RawURLEncoding.DecodeString(base64Part)
 	if err != nil {
 		t.Fatalf("failed to decode base64: %v", err)
 	}
@@ -698,7 +698,7 @@ func TestGenerateUIConfigJSON_RedirectWithRootPath(t *testing.T) {
 
 	// Extract and verify base64 params
 	base64Part := strings.TrimPrefix(entry.URL, expectedPrefix)
-	decoded, err := base64.URLEncoding.DecodeString(base64Part)
+	decoded, err := base64.RawURLEncoding.DecodeString(base64Part)
 	if err != nil {
 		t.Fatalf("failed to decode base64: %v", err)
 	}

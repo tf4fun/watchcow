@@ -149,7 +149,8 @@ func GenerateUIConfigJSON(data *TemplateData) ([]byte, error) {
 				"p": entry.Port,
 			}
 			paramsJSON, _ := json.Marshal(params)
-			paramsBase64 := base64.URLEncoding.EncodeToString(paramsJSON)
+			// Use RawURLEncoding (no padding) to avoid '=' in URL which can cause issues
+			paramsBase64 := base64.RawURLEncoding.EncodeToString(paramsJSON)
 
 			cgiPath := "/cgi/ThirdParty/" + data.AppName + "/index.cgi/redirect/" + paramsBase64
 			if entry.Path != "" && entry.Path != "/" {
