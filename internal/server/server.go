@@ -141,13 +141,3 @@ func (s *Server) Ready() <-chan struct{} {
 func (s *Server) SocketPath() string {
 	return s.socketPath
 }
-
-// GetSocketPath returns the socket path based on environment
-// Uses TRIM_PKGVAR if set, otherwise falls back to /tmp/watchcow
-func GetSocketPath() string {
-	pkgVar := os.Getenv("TRIM_PKGVAR")
-	if pkgVar != "" {
-		return filepath.Join(pkgVar, "watchcow.sock")
-	}
-	return "/tmp/watchcow/watchcow.sock"
-}

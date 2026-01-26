@@ -3,11 +3,11 @@ package main
 import (
 	"context"
 	"flag"
+	"fmt"
 	"log/slog"
 	"os"
 	"os/signal"
 	"path/filepath"
-	"strings"
 	"syscall"
 
 	"watchcow/internal/cgi"
@@ -15,32 +15,52 @@ import (
 	"watchcow/internal/server"
 )
 
-func main() {
-	// Check if running as CGI (via symlink like index.cgi -> watchcow)
-	execName := filepath.Base(os.Args[0])
-	if strings.HasSuffix(execName, ".cgi") || strings.Contains(execName, "cgi") {
-		runCGIMode()
-		return
+// fallbackSocketPath is used when TRIM_PKGVAR is not set
+const fallbackSocketPath = "/tmp/watchcow/watchcow.sock"
+
+// getDefaultSocketPath returns socket path based on environment
+func getDefaultSocketPath() string {
+	if pkgVar := os.Getenv("TRIM_PKGVAR"); pkgVar != "" {
+		return filepath.Join(pkgVar, "watchcow.sock")
 	}
-
-	runDaemonMode()
+	return fallbackSocketPath
 }
 
-// runCGIMode handles CGI requests for redirect functionality
-func runCGIMode() {
-	handler := cgi.NewCGIHandler()
-	handler.HandleCGI()
-}
-
-// runDaemonMode runs the Docker monitoring daemon
-func runDaemonMode() {
-	// Parse command line flags
+func main() {
+	// Define flags
+	mode := flag.String("mode", "server", "Run mode: server or cgi")
+	socketPath := flag.String("socket", "", "Unix socket path (default: $TRIM_PKGVAR/watchcow.sock or /tmp/watchcow/watchcow.sock)")
 	debug := flag.Bool("debug", false, "Enable debug mode")
 	flag.Parse()
 
+	// Use default socket path if not specified
+	actualSocketPath := *socketPath
+	if actualSocketPath == "" {
+		actualSocketPath = getDefaultSocketPath()
+	}
+
+	switch *mode {
+	case "server":
+		runServerMode(actualSocketPath, *debug)
+	case "cgi":
+		runCGIMode(actualSocketPath)
+	default:
+		fmt.Fprintf(os.Stderr, "Unknown mode: %s (use 'server' or 'cgi')\n", *mode)
+		os.Exit(1)
+	}
+}
+
+// runCGIMode handles CGI requests for redirect functionality
+func runCGIMode(socketPath string) {
+	handler := cgi.NewCGIHandler(socketPath)
+	handler.HandleCGI()
+}
+
+// runServerMode runs the Docker monitoring daemon with HTTP server
+func runServerMode(socketPath string, debug bool) {
 	// Configure slog
 	var logLevel slog.Level
-	if *debug {
+	if debug {
 		logLevel = slog.LevelDebug
 	} else {
 		logLevel = slog.LevelInfo
@@ -72,7 +92,6 @@ func runDaemonMode() {
 	}
 
 	// Step 2: Create HTTP handler and router
-	socketPath := server.GetSocketPath()
 	redirectHandler := server.NewRedirectHandler()
 	router := server.NewRouter(redirectHandler)
 

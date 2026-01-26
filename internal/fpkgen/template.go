@@ -235,7 +235,8 @@ type TemplateData struct {
 
 	// CGI redirect mode
 	HasRedirect     bool   // True if any entry uses redirect mode
-	WatchCowAppDest string // TRIM_APPDEST of watchcow package (for CGI symlink)
+	WatchCowAppDest string // TRIM_APPDEST of watchcow package (for CGI binary path)
+	WatchCowPkgVar  string // TRIM_PKGVAR of watchcow package (for socket path)
 }
 
 // NewTemplateData creates TemplateData from AppConfig
@@ -348,9 +349,10 @@ func NewTemplateData(config *AppConfig) *TemplateData {
 	// Set default launch entry to first displayable entry's full name
 	data.DefaultLaunchEntry = defaultLaunchEntry
 
-	// Set WatchCow's TRIM_APPDEST for CGI symlink
+	// Set WatchCow's paths for CGI script
 	if data.HasRedirect {
 		data.WatchCowAppDest = os.Getenv("TRIM_APPDEST")
+		data.WatchCowPkgVar = os.Getenv("TRIM_PKGVAR")
 	}
 
 	return data

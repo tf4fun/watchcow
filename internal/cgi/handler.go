@@ -7,20 +7,9 @@ import (
 	"net"
 	"net/http"
 	"os"
-	"path/filepath"
 	"strings"
 	"time"
 )
-
-// GetSocketPath returns the socket path based on environment
-// Uses TRIM_PKGVAR if set, otherwise falls back to /tmp/watchcow
-func GetSocketPath() string {
-	pkgVar := os.Getenv("TRIM_PKGVAR")
-	if pkgVar != "" {
-		return filepath.Join(pkgVar, "watchcow.sock")
-	}
-	return "/tmp/watchcow/watchcow.sock"
-}
 
 // CGIHandler handles CGI requests by proxying to the Unix socket server
 type CGIHandler struct {
@@ -29,9 +18,7 @@ type CGIHandler struct {
 }
 
 // NewCGIHandler creates a new CGI handler that proxies to the daemon
-func NewCGIHandler() *CGIHandler {
-	socketPath := GetSocketPath()
-
+func NewCGIHandler(socketPath string) *CGIHandler {
 	// Create HTTP client with Unix socket transport
 	transport := &http.Transport{
 		DialContext: func(ctx context.Context, network, addr string) (net.Conn, error) {
