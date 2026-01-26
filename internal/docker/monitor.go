@@ -13,6 +13,7 @@ import (
 	"github.com/docker/docker/api/types/filters"
 	"github.com/docker/docker/client"
 
+	"watchcow/internal/app"
 	"watchcow/internal/fpkgen"
 )
 
@@ -36,6 +37,9 @@ type Monitor struct {
 
 	// Track container states - only accessed from operation worker goroutine
 	containers map[string]*ContainerState // map[containerID]state
+
+	// App registry for runtime app info lookup
+	registry *app.Registry
 
 	// Operation queue for serializing all state changes and appcenter-cli calls
 	opQueue chan *AppOperation
@@ -80,6 +84,7 @@ func NewMonitor() (*Monitor, error) {
 		installer:  installer,
 		stopCh:     make(chan struct{}),
 		containers: make(map[string]*ContainerState),
+		registry:   app.NewRegistry(),
 		opQueue:    make(chan *AppOperation, 100),
 	}, nil
 }
@@ -125,6 +130,8 @@ func (m *Monitor) processContainerStart(ctx context.Context, op *AppOperation) {
 			Installed:     true,
 			Labels:        op.Labels,
 		}
+		// Register app in registry (from labels)
+		m.registerAppFromLabels(appName, op.ContainerID, op.ContainerName, op.Labels)
 		if m.installer != nil {
 			m.installer.StartApp(appName)
 		}
@@ -167,6 +174,8 @@ func (m *Monitor) processContainerStart(ctx context.Context, op *AppOperation) {
 				state.Installed = true
 				state.AppName = config.AppName
 			}
+			// Register app in registry (from config)
+			m.registerAppFromConfig(config, op.ContainerID, op.ContainerName)
 			slog.Info("Successfully installed fnOS app", "app", config.AppName)
 		}
 	}
@@ -221,6 +230,10 @@ func (m *Monitor) processDestroy(op *AppOperation) {
 
 	// Remove from tracking
 	delete(m.containers, op.ContainerID)
+
+	// Unregister from app registry
+	m.registry.Unregister(appName)
+	slog.Debug("Unregistered app from registry", "app", appName)
 
 	// Uninstall if was installed
 	if wasInstalled && m.installer != nil {
@@ -391,4 +404,75 @@ func (m *Monitor) Stop() {
 			slog.Warn("Error closing Docker client", "error", err)
 		}
 	}
+}
+
+// Registry returns the app registry for external access (e.g., by server)
+func (m *Monitor) Registry() *app.Registry {
+	return m.registry
+}
+
+// registerAppFromConfig creates and registers an App instance from fpkgen.AppConfig
+func (m *Monitor) registerAppFromConfig(config *fpkgen.AppConfig, containerID, containerName string) {
+	appInstance := &app.App{
+		AppName:       config.AppName,
+		DisplayName:   config.DisplayName,
+		ContainerID:   containerID,
+		ContainerName: containerName,
+		Image:         config.Image,
+		Status:        app.StatusRunning,
+		Entries:       make([]app.Entry, 0, len(config.Entries)),
+	}
+
+	// Convert entries
+	for _, e := range config.Entries {
+		entry := app.Entry{
+			Name:     e.Name,
+			Title:    e.Title,
+			Protocol: e.Protocol,
+			Port:     e.Port,
+			Path:     e.Path,
+			Redirect: e.Redirect,
+		}
+		appInstance.Entries = append(appInstance.Entries, entry)
+	}
+
+	m.registry.Register(appInstance)
+	slog.Debug("Registered app in registry", "app", config.AppName, "entries", len(appInstance.Entries))
+}
+
+// registerAppFromLabels creates and registers an App instance from container labels
+// Used when app is already installed and we need to reconstruct the app info
+func (m *Monitor) registerAppFromLabels(appName, containerID, containerName string, labels map[string]string) {
+	appInstance := &app.App{
+		AppName:       appName,
+		DisplayName:   labels["watchcow.display_name"],
+		ContainerID:   containerID,
+		ContainerName: containerName,
+		Image:         labels["watchcow.image"],
+		Status:        app.StatusRunning,
+		Entries:       make([]app.Entry, 0),
+	}
+
+	if appInstance.DisplayName == "" {
+		appInstance.DisplayName = containerName
+	}
+
+	// Parse entries from labels using fpkgen's ParseEntries
+	defaultPort := labels["watchcow.service_port"]
+	defaultIcon := labels["watchcow.icon"]
+	entries := fpkgen.ParseEntries(labels, appInstance.DisplayName, defaultIcon, defaultPort)
+	for _, e := range entries {
+		entry := app.Entry{
+			Name:     e.Name,
+			Title:    e.Title,
+			Protocol: e.Protocol,
+			Port:     e.Port,
+			Path:     e.Path,
+			Redirect: e.Redirect,
+		}
+		appInstance.Entries = append(appInstance.Entries, entry)
+	}
+
+	m.registry.Register(appInstance)
+	slog.Debug("Registered app in registry from labels", "app", appName, "entries", len(appInstance.Entries))
 }

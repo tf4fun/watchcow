@@ -20,7 +20,7 @@ func TestParseEntries_DefaultEntry(t *testing.T) {
 		"watchcow.icon":         "https://example.com/icon.png",
 	}
 
-	entries := parseEntries(labels, "Test App", "https://default.icon/icon.png", "9090")
+	entries := ParseEntries(labels, "Test App", "https://default.icon/icon.png", "9090")
 
 	if len(entries) != 1 {
 		t.Fatalf("expected 1 entry, got %d", len(entries))
@@ -60,7 +60,7 @@ func TestParseEntries_DefaultEntryDefaults(t *testing.T) {
 		"watchcow.service_port": "8080",
 	}
 
-	entries := parseEntries(labels, "Test App", "https://default.icon/icon.png", "9090")
+	entries := ParseEntries(labels, "Test App", "https://default.icon/icon.png", "9090")
 
 	if len(entries) != 1 {
 		t.Fatalf("expected 1 entry, got %d", len(entries))
@@ -101,7 +101,7 @@ func TestParseEntries_NamedEntry(t *testing.T) {
 		"watchcow.admin.icon":         "https://example.com/admin-icon.png",
 	}
 
-	entries := parseEntries(labels, "Test App", "https://default.icon/icon.png", "9090")
+	entries := ParseEntries(labels, "Test App", "https://default.icon/icon.png", "9090")
 
 	if len(entries) != 1 {
 		t.Fatalf("expected 1 entry, got %d", len(entries))
@@ -129,7 +129,7 @@ func TestParseEntries_NamedEntryDefaultTitle(t *testing.T) {
 		"watchcow.admin.service_port": "8081",
 	}
 
-	entries := parseEntries(labels, "Test App", "https://default.icon/icon.png", "9090")
+	entries := ParseEntries(labels, "Test App", "https://default.icon/icon.png", "9090")
 
 	if len(entries) != 1 {
 		t.Fatalf("expected 1 entry, got %d", len(entries))
@@ -160,7 +160,7 @@ func TestParseEntries_MultipleEntries(t *testing.T) {
 		"watchcow.api.no_display":   "true",
 	}
 
-	entries := parseEntries(labels, "Test App", "https://default.icon/icon.png", "9090")
+	entries := ParseEntries(labels, "Test App", "https://default.icon/icon.png", "9090")
 
 	if len(entries) != 3 {
 		t.Fatalf("expected 3 entries, got %d", len(entries))
@@ -228,7 +228,7 @@ func TestParseEntries_OnlyNamedEntries(t *testing.T) {
 		"watchcow.admin.title":        "Admin",
 	}
 
-	entries := parseEntries(labels, "Test App", "https://default.icon/icon.png", "9090")
+	entries := ParseEntries(labels, "Test App", "https://default.icon/icon.png", "9090")
 
 	if len(entries) != 2 {
 		t.Fatalf("expected 2 entries, got %d", len(entries))
@@ -251,7 +251,7 @@ func TestParseEntries_FileTypes(t *testing.T) {
 		"watchcow.editor.no_display": "true",
 	}
 
-	entries := parseEntries(labels, "Editor", "https://default.icon/icon.png", "8080")
+	entries := ParseEntries(labels, "Editor", "https://default.icon/icon.png", "8080")
 
 	if len(entries) != 1 {
 		t.Fatalf("expected 1 entry, got %d", len(entries))
@@ -281,7 +281,7 @@ func TestParseEntries_Control(t *testing.T) {
 		"watchcow.admin.control.access_perm": "editable",
 	}
 
-	entries := parseEntries(labels, "Test App", "https://default.icon/icon.png", "9090")
+	entries := ParseEntries(labels, "Test App", "https://default.icon/icon.png", "9090")
 
 	if len(entries) != 2 {
 		t.Fatalf("expected 2 entries, got %d", len(entries))
@@ -544,7 +544,7 @@ func TestParseEntries_Redirect(t *testing.T) {
 		"watchcow.redirect":     "example.com:8080",
 	}
 
-	entries := parseEntries(labels, "Test App", "https://default.icon/icon.png", "9090")
+	entries := ParseEntries(labels, "Test App", "https://default.icon/icon.png", "9090")
 
 	if len(entries) != 1 {
 		t.Fatalf("expected 1 entry, got %d", len(entries))
@@ -564,7 +564,7 @@ func TestParseEntries_NamedEntryRedirect(t *testing.T) {
 		// Note: no service_port specified, should inherit defaultPort
 	}
 
-	entries := parseEntries(labels, "Test App", "https://default.icon/icon.png", "9090")
+	entries := ParseEntries(labels, "Test App", "https://default.icon/icon.png", "9090")
 
 	var adminEntry *Entry
 	for i := range entries {

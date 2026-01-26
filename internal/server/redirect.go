@@ -70,6 +70,28 @@ func parseRedirectHost(host string) parsedRedirect {
 	return result
 }
 
+// decodeBase64 decodes a base64 string, automatically adding padding if needed.
+// This handles URLs where '=' padding was stripped by URL processing.
+// Supports both URL-safe (-_) and standard (+/) alphabets.
+func decodeBase64(s string) ([]byte, error) {
+	// Add padding if needed (base64 length should be multiple of 4)
+	switch len(s) % 4 {
+	case 2:
+		s += "=="
+	case 3:
+		s += "="
+	}
+
+	// Try URL-safe encoding first (uses - and _ instead of + and /)
+	data, err := base64.URLEncoding.DecodeString(s)
+	if err == nil {
+		return data, nil
+	}
+
+	// Fall back to standard encoding (uses + and /)
+	return base64.StdEncoding.DecodeString(s)
+}
+
 // redirectParams holds the decoded parameters from base64 JSON
 type redirectParams struct {
 	Host string `json:"h"` // redirect host (e.g., https://example.com)
@@ -105,21 +127,11 @@ func (h *RedirectHandler) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 		path = "/"
 	}
 
-	// Decode base64 - try multiple encodings for compatibility
-	// Priority: RawURLEncoding (no padding) > URLEncoding (with padding) > StdEncoding
-	jsonBytes, err := base64.RawURLEncoding.DecodeString(base64Part)
+	// Decode base64 - add padding if needed for compatibility with URLs where '=' was stripped
+	jsonBytes, err := decodeBase64(base64Part)
 	if err != nil {
-		jsonBytes, err = base64.URLEncoding.DecodeString(base64Part)
-		if err != nil {
-			jsonBytes, err = base64.RawStdEncoding.DecodeString(base64Part)
-			if err != nil {
-				jsonBytes, err = base64.StdEncoding.DecodeString(base64Part)
-				if err != nil {
-					h.outputError(w, http.StatusBadRequest, "Invalid base64 encoding")
-					return
-				}
-			}
-		}
+		h.outputError(w, http.StatusBadRequest, "Invalid base64 encoding: "+err.Error())
+		return
 	}
 
 	// Parse JSON

@@ -207,7 +207,7 @@ func (g *Generator) extractConfig(container *dockercontainer.InspectResponse) *A
 	}
 
 	// Parse multi-entry configuration
-	config.Entries = parseEntries(labels, displayName, defaultIcon, config.Port)
+	config.Entries = ParseEntries(labels, displayName, defaultIcon, config.Port)
 
 	// If no entries configured, create a default entry for backward compatibility
 	if len(config.Entries) == 0 {
@@ -518,8 +518,8 @@ func parseEntry(labels map[string]string, name string, displayName string, defau
 	}
 }
 
-// parseEntries extracts all entries from container labels
-func parseEntries(labels map[string]string, displayName string, defaultIcon string, defaultPort string) []Entry {
+// ParseEntries extracts all entries from container labels
+func ParseEntries(labels map[string]string, displayName string, defaultIcon string, defaultPort string) []Entry {
 	entries := []Entry{}
 	entryNames := make(map[string]bool)
 

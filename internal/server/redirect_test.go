@@ -308,6 +308,51 @@ func TestParseRedirectHost(t *testing.T) {
 	}
 }
 
+// TestDecodeBase64 tests the decodeBase64 function with various padding scenarios
+func TestDecodeBase64(t *testing.T) {
+	// {"h":"https://www.bilibili.com","p":"27890"}
+	expectedJSON := `{"h":"https://www.bilibili.com","p":"27890"}`
+
+	tests := []struct {
+		name   string
+		input  string // base64 encoded string
+		expect string // expected decoded string
+	}{
+		{
+			name:   "with padding (=)",
+			input:  "eyJoIjoiaHR0cHM6Ly93d3cuYmlsaWJpbGkuY29tIiwicCI6IjI3ODkwIn0=",
+			expect: expectedJSON,
+		},
+		{
+			name:   "without padding (stripped =)",
+			input:  "eyJoIjoiaHR0cHM6Ly93d3cuYmlsaWJpbGkuY29tIiwicCI6IjI3ODkwIn0",
+			expect: expectedJSON,
+		},
+		{
+			name:   "simple string with 2 padding",
+			input:  "YWI", // "ab" without padding (should be "YWI=")
+			expect: "ab",
+		},
+		{
+			name:   "simple string with 1 padding",
+			input:  "YWJj", // "abc" no padding needed
+			expect: "abc",
+		},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			decoded, err := decodeBase64(tt.input)
+			if err != nil {
+				t.Fatalf("decodeBase64 failed: %v", err)
+			}
+			if string(decoded) != tt.expect {
+				t.Errorf("expected %q, got %q", tt.expect, string(decoded))
+			}
+		})
+	}
+}
+
 // TestSanitizeQueryString tests the sanitizeQueryString function
 func TestSanitizeQueryString(t *testing.T) {
 	tests := []struct {
