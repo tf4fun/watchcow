@@ -72,8 +72,8 @@ func TestRedirectHandler_AppLookup(t *testing.T) {
 	registry := createTestRegistry()
 	handler := NewRedirectHandler(registry)
 
-	// Test: /watchcow.nginx/_/index.html (default entry)
-	req := httptest.NewRequest("GET", "/watchcow.nginx/_/index.html", nil)
+	// Test: /redirect/watchcow.nginx/_/index.html (default entry)
+	req := httptest.NewRequest("GET", "/redirect/watchcow.nginx/_/index.html", nil)
 	w := httptest.NewRecorder()
 
 	handler.ServeHTTP(w, req)
@@ -101,8 +101,8 @@ func TestRedirectHandler_NamedEntry(t *testing.T) {
 	registry := createTestRegistry()
 	handler := NewRedirectHandler(registry)
 
-	// Test: /watchcow.testapp/admin/dashboard
-	req := httptest.NewRequest("GET", "/watchcow.testapp/admin/dashboard", nil)
+	// Test: /redirect/watchcow.testapp/admin/dashboard
+	req := httptest.NewRequest("GET", "/redirect/watchcow.testapp/admin/dashboard", nil)
 	w := httptest.NewRecorder()
 
 	handler.ServeHTTP(w, req)
@@ -126,8 +126,8 @@ func TestRedirectHandler_RootPath(t *testing.T) {
 	registry := createTestRegistry()
 	handler := NewRedirectHandler(registry)
 
-	// Test: /watchcow.testapp/_ (default entry, root path)
-	req := httptest.NewRequest("GET", "/watchcow.testapp/_", nil)
+	// Test: /redirect/watchcow.testapp/_ (default entry, root path)
+	req := httptest.NewRequest("GET", "/redirect/watchcow.testapp/_", nil)
 	w := httptest.NewRecorder()
 
 	handler.ServeHTTP(w, req)
@@ -148,7 +148,7 @@ func TestRedirectHandler_WithQueryString(t *testing.T) {
 	registry := createTestRegistry()
 	handler := NewRedirectHandler(registry)
 
-	req := httptest.NewRequest("GET", "/watchcow.testapp/_/api/data?foo=bar&baz=123", nil)
+	req := httptest.NewRequest("GET", "/redirect/watchcow.testapp/_/api/data?foo=bar&baz=123", nil)
 	w := httptest.NewRecorder()
 
 	handler.ServeHTTP(w, req)
@@ -169,7 +169,7 @@ func TestRedirectHandler_AppNotFound(t *testing.T) {
 	registry := createTestRegistry()
 	handler := NewRedirectHandler(registry)
 
-	req := httptest.NewRequest("GET", "/nonexistent.app/_/path", nil)
+	req := httptest.NewRequest("GET", "/redirect/nonexistent.app/_/path", nil)
 	w := httptest.NewRecorder()
 
 	handler.ServeHTTP(w, req)
@@ -190,7 +190,7 @@ func TestRedirectHandler_EntryNotFound(t *testing.T) {
 	registry := createTestRegistry()
 	handler := NewRedirectHandler(registry)
 
-	req := httptest.NewRequest("GET", "/watchcow.testapp/nonexistent/path", nil)
+	req := httptest.NewRequest("GET", "/redirect/watchcow.testapp/nonexistent/path", nil)
 	w := httptest.NewRecorder()
 
 	handler.ServeHTTP(w, req)
@@ -211,7 +211,7 @@ func TestRedirectHandler_NoRedirectConfigured(t *testing.T) {
 	registry := createTestRegistry()
 	handler := NewRedirectHandler(registry)
 
-	req := httptest.NewRequest("GET", "/watchcow.noredirect/_/path", nil)
+	req := httptest.NewRequest("GET", "/redirect/watchcow.noredirect/_/path", nil)
 	w := httptest.NewRecorder()
 
 	handler.ServeHTTP(w, req)
@@ -233,7 +233,7 @@ func TestRedirectHandler_InvalidPath(t *testing.T) {
 	handler := NewRedirectHandler(registry)
 
 	// Only appname, no entry
-	req := httptest.NewRequest("GET", "/watchcow.testapp", nil)
+	req := httptest.NewRequest("GET", "/redirect/watchcow.testapp", nil)
 	w := httptest.NewRecorder()
 
 	handler.ServeHTTP(w, req)

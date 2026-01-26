@@ -86,10 +86,11 @@ type redirectTemplateData struct {
 }
 
 // ServeHTTP implements http.Handler for redirect requests
-// Expected path format: /<appname>/<entry>[/<path...>]
+// Expected path format: /redirect/<appname>/<entry>[/<path...>]
 // Use "_" for default entry (empty name)
 func (h *RedirectHandler) ServeHTTP(w http.ResponseWriter, r *http.Request) {
-	pathInfo := strings.TrimPrefix(r.URL.Path, "/")
+	// Strip the /redirect prefix (chi Mount doesn't strip it automatically)
+	pathInfo := strings.TrimPrefix(r.URL.Path, "/redirect/")
 
 	// Parse: <appname>/<entry>[/<path...>]
 	parts := strings.SplitN(pathInfo, "/", 3)
