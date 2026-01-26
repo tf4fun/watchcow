@@ -91,8 +91,8 @@ func runServerMode(socketPath string, debug bool) {
 		os.Exit(1)
 	}
 
-	// Step 2: Create HTTP handler and router
-	redirectHandler := server.NewRedirectHandler()
+	// Step 2: Create HTTP handler and router (redirect handler needs registry from monitor)
+	redirectHandler := server.NewRedirectHandler(monitor.Registry())
 	router := server.NewRouter(redirectHandler)
 
 	// Step 3: Create server with monitor injected

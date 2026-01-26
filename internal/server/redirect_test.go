@@ -5,20 +5,75 @@ import (
 	"net/http/httptest"
 	"strings"
 	"testing"
+
+	"watchcow/internal/app"
 )
 
-// TestRedirectHandler_Base64WithPadding tests backward compatibility with base64 URLs that have '=' padding
-// This is a real URL that was reported as failing: the base64 string ends with '=' which can cause issues
-// URL: /cgi/ThirdParty/watchcow.nginx/index.cgi/redirect/eyJoIjoiaHR0cHM6Ly93d3cuYmlsaWJpbGkuY29tIiwicCI6IjI3ODkwIn0=/index.html
-func TestRedirectHandler_Base64WithPadding(t *testing.T) {
-	handler := NewRedirectHandler()
+// createTestRegistry creates a registry with test apps for testing
+func createTestRegistry() *app.Registry {
+	registry := app.NewRegistry()
 
-	// This is the exact base64 string from the reported issue (with '=' padding)
-	// Decodes to: {"h":"https://www.bilibili.com","p":"27890"}
-	base64WithPadding := "eyJoIjoiaHR0cHM6Ly93d3cuYmlsaWJpbGkuY29tIiwicCI6IjI3ODkwIn0="
-	path := "/index.html"
+	// Add test app: watchcow.nginx with redirect
+	registry.Register(&app.App{
+		AppName:     "watchcow.nginx",
+		DisplayName: "Nginx",
+		ContainerID: "abc123",
+		Entries: []app.Entry{
+			{
+				Name:     "",
+				Title:    "Nginx",
+				Port:     "27890",
+				Redirect: "https://www.bilibili.com",
+			},
+		},
+	})
 
-	req := httptest.NewRequest("GET", "/"+base64WithPadding+path, nil)
+	// Add test app: watchcow.testapp with multiple entries
+	registry.Register(&app.App{
+		AppName:     "watchcow.testapp",
+		DisplayName: "Test App",
+		ContainerID: "def456",
+		Entries: []app.Entry{
+			{
+				Name:     "",
+				Title:    "Default",
+				Port:     "8080",
+				Redirect: "https://example.com",
+			},
+			{
+				Name:     "admin",
+				Title:    "Admin Panel",
+				Port:     "8081",
+				Redirect: "https://admin.example.com",
+			},
+		},
+	})
+
+	// Add test app without redirect
+	registry.Register(&app.App{
+		AppName:     "watchcow.noredirect",
+		DisplayName: "No Redirect",
+		ContainerID: "ghi789",
+		Entries: []app.Entry{
+			{
+				Name:  "",
+				Title: "Default",
+				Port:  "9000",
+				// No redirect configured
+			},
+		},
+	})
+
+	return registry
+}
+
+// TestRedirectHandler_AppLookup tests redirect via app registry lookup
+func TestRedirectHandler_AppLookup(t *testing.T) {
+	registry := createTestRegistry()
+	handler := NewRedirectHandler(registry)
+
+	// Test: /watchcow.nginx/_/index.html (default entry)
+	req := httptest.NewRequest("GET", "/watchcow.nginx/_/index.html", nil)
 	w := httptest.NewRecorder()
 
 	handler.ServeHTTP(w, req)
@@ -30,10 +85,8 @@ func TestRedirectHandler_Base64WithPadding(t *testing.T) {
 	}
 
 	body := w.Body.String()
-	// Verify the response contains expected redirect data
-	// Note: the template uses JS escaping, so "https://" becomes "https:\/\/"
 	if !strings.Contains(body, "bilibili.com") {
-		t.Errorf("response should contain redirect host 'bilibili.com', got: %s", body[:min(500, len(body))])
+		t.Errorf("response should contain redirect host 'bilibili.com'")
 	}
 	if !strings.Contains(body, "27890") {
 		t.Errorf("response should contain container port '27890'")
@@ -43,16 +96,13 @@ func TestRedirectHandler_Base64WithPadding(t *testing.T) {
 	}
 }
 
-// TestRedirectHandler_Base64WithoutPadding tests the new preferred format without '=' padding
-func TestRedirectHandler_Base64WithoutPadding(t *testing.T) {
-	handler := NewRedirectHandler()
+// TestRedirectHandler_NamedEntry tests redirect with named entry
+func TestRedirectHandler_NamedEntry(t *testing.T) {
+	registry := createTestRegistry()
+	handler := NewRedirectHandler(registry)
 
-	// Same JSON but encoded with RawURLEncoding (no padding)
-	// {"h":"https://www.bilibili.com","p":"27890"}
-	base64WithoutPadding := "eyJoIjoiaHR0cHM6Ly93d3cuYmlsaWJpbGkuY29tIiwicCI6IjI3ODkwIn0"
-	path := "/index.html"
-
-	req := httptest.NewRequest("GET", "/"+base64WithoutPadding+path, nil)
+	// Test: /watchcow.testapp/admin/dashboard
+	req := httptest.NewRequest("GET", "/watchcow.testapp/admin/dashboard", nil)
 	w := httptest.NewRecorder()
 
 	handler.ServeHTTP(w, req)
@@ -60,27 +110,24 @@ func TestRedirectHandler_Base64WithoutPadding(t *testing.T) {
 	resp := w.Result()
 	if resp.StatusCode != http.StatusOK {
 		t.Errorf("expected status 200, got %d", resp.StatusCode)
-		t.Errorf("response body: %s", w.Body.String())
 	}
 
 	body := w.Body.String()
-	// Note: the template uses JS escaping
-	if !strings.Contains(body, "bilibili.com") {
-		t.Errorf("response should contain redirect host 'bilibili.com'")
+	if !strings.Contains(body, "admin.example.com") {
+		t.Errorf("response should contain redirect host 'admin.example.com'")
 	}
-	if !strings.Contains(body, "27890") {
-		t.Errorf("response should contain container port '27890'")
+	if !strings.Contains(body, "8081") {
+		t.Errorf("response should contain container port '8081'")
 	}
 }
 
-// TestRedirectHandler_RootPath tests redirect with root path (no trailing path)
+// TestRedirectHandler_RootPath tests redirect with root path
 func TestRedirectHandler_RootPath(t *testing.T) {
-	handler := NewRedirectHandler()
+	registry := createTestRegistry()
+	handler := NewRedirectHandler(registry)
 
-	// {"h":"example.com","p":"8080"}
-	base64Str := "eyJoIjoiZXhhbXBsZS5jb20iLCJwIjoiODA4MCJ9"
-
-	req := httptest.NewRequest("GET", "/"+base64Str, nil)
+	// Test: /watchcow.testapp/_ (default entry, root path)
+	req := httptest.NewRequest("GET", "/watchcow.testapp/_", nil)
 	w := httptest.NewRecorder()
 
 	handler.ServeHTTP(w, req)
@@ -94,19 +141,14 @@ func TestRedirectHandler_RootPath(t *testing.T) {
 	if !strings.Contains(body, "example.com") {
 		t.Errorf("response should contain redirect host 'example.com'")
 	}
-	if !strings.Contains(body, "8080") {
-		t.Errorf("response should contain container port '8080'")
-	}
 }
 
 // TestRedirectHandler_WithQueryString tests redirect with query string
 func TestRedirectHandler_WithQueryString(t *testing.T) {
-	handler := NewRedirectHandler()
+	registry := createTestRegistry()
+	handler := NewRedirectHandler(registry)
 
-	// {"h":"example.com","p":"8080"}
-	base64Str := "eyJoIjoiZXhhbXBsZS5jb20iLCJwIjoiODA4MCJ9"
-
-	req := httptest.NewRequest("GET", "/"+base64Str+"/api/data?foo=bar&baz=123", nil)
+	req := httptest.NewRequest("GET", "/watchcow.testapp/_/api/data?foo=bar&baz=123", nil)
 	w := httptest.NewRecorder()
 
 	handler.ServeHTTP(w, req)
@@ -122,11 +164,54 @@ func TestRedirectHandler_WithQueryString(t *testing.T) {
 	}
 }
 
-// TestRedirectHandler_InvalidBase64 tests error handling for invalid base64
-func TestRedirectHandler_InvalidBase64(t *testing.T) {
-	handler := NewRedirectHandler()
+// TestRedirectHandler_AppNotFound tests error when app not found
+func TestRedirectHandler_AppNotFound(t *testing.T) {
+	registry := createTestRegistry()
+	handler := NewRedirectHandler(registry)
 
-	req := httptest.NewRequest("GET", "/not-valid-base64!!!/path", nil)
+	req := httptest.NewRequest("GET", "/nonexistent.app/_/path", nil)
+	w := httptest.NewRecorder()
+
+	handler.ServeHTTP(w, req)
+
+	resp := w.Result()
+	if resp.StatusCode != http.StatusNotFound {
+		t.Errorf("expected status 404, got %d", resp.StatusCode)
+	}
+
+	body := w.Body.String()
+	if !strings.Contains(body, "App not found") {
+		t.Errorf("response should contain 'App not found' error message")
+	}
+}
+
+// TestRedirectHandler_EntryNotFound tests error when entry not found
+func TestRedirectHandler_EntryNotFound(t *testing.T) {
+	registry := createTestRegistry()
+	handler := NewRedirectHandler(registry)
+
+	req := httptest.NewRequest("GET", "/watchcow.testapp/nonexistent/path", nil)
+	w := httptest.NewRecorder()
+
+	handler.ServeHTTP(w, req)
+
+	resp := w.Result()
+	if resp.StatusCode != http.StatusNotFound {
+		t.Errorf("expected status 404, got %d", resp.StatusCode)
+	}
+
+	body := w.Body.String()
+	if !strings.Contains(body, "Entry not found") {
+		t.Errorf("response should contain 'Entry not found' error message")
+	}
+}
+
+// TestRedirectHandler_NoRedirectConfigured tests error when entry has no redirect
+func TestRedirectHandler_NoRedirectConfigured(t *testing.T) {
+	registry := createTestRegistry()
+	handler := NewRedirectHandler(registry)
+
+	req := httptest.NewRequest("GET", "/watchcow.noredirect/_/path", nil)
 	w := httptest.NewRecorder()
 
 	handler.ServeHTTP(w, req)
@@ -137,19 +222,18 @@ func TestRedirectHandler_InvalidBase64(t *testing.T) {
 	}
 
 	body := w.Body.String()
-	if !strings.Contains(body, "Invalid base64") {
-		t.Errorf("response should contain 'Invalid base64' error message")
+	if !strings.Contains(body, "does not have redirect configured") {
+		t.Errorf("response should contain 'does not have redirect configured' error message")
 	}
 }
 
-// TestRedirectHandler_InvalidJSON tests error handling for valid base64 but invalid JSON
-func TestRedirectHandler_InvalidJSON(t *testing.T) {
-	handler := NewRedirectHandler()
+// TestRedirectHandler_InvalidPath tests error for invalid path format
+func TestRedirectHandler_InvalidPath(t *testing.T) {
+	registry := createTestRegistry()
+	handler := NewRedirectHandler(registry)
 
-	// Base64 of "not json"
-	base64Str := "bm90IGpzb24"
-
-	req := httptest.NewRequest("GET", "/"+base64Str+"/path", nil)
+	// Only appname, no entry
+	req := httptest.NewRequest("GET", "/watchcow.testapp", nil)
 	w := httptest.NewRecorder()
 
 	handler.ServeHTTP(w, req)
@@ -160,82 +244,8 @@ func TestRedirectHandler_InvalidJSON(t *testing.T) {
 	}
 
 	body := w.Body.String()
-	if !strings.Contains(body, "Invalid JSON") {
-		t.Errorf("response should contain 'Invalid JSON' error message")
-	}
-}
-
-// TestRedirectHandler_MissingHost tests error handling for missing 'h' field
-func TestRedirectHandler_MissingHost(t *testing.T) {
-	handler := NewRedirectHandler()
-
-	// {"p":"8080"} - missing 'h' field
-	base64Str := "eyJwIjoiODA4MCJ9"
-
-	req := httptest.NewRequest("GET", "/"+base64Str+"/path", nil)
-	w := httptest.NewRecorder()
-
-	handler.ServeHTTP(w, req)
-
-	resp := w.Result()
-	if resp.StatusCode != http.StatusBadRequest {
-		t.Errorf("expected status 400, got %d", resp.StatusCode)
-	}
-
-	body := w.Body.String()
-	if !strings.Contains(body, "Missing redirect host") {
-		t.Errorf("response should contain 'Missing redirect host' error message")
-	}
-}
-
-// TestRedirectHandler_MissingPort tests error handling for missing 'p' field
-func TestRedirectHandler_MissingPort(t *testing.T) {
-	handler := NewRedirectHandler()
-
-	// {"h":"example.com"} - missing 'p' field
-	base64Str := "eyJoIjoiZXhhbXBsZS5jb20ifQ"
-
-	req := httptest.NewRequest("GET", "/"+base64Str+"/path", nil)
-	w := httptest.NewRecorder()
-
-	handler.ServeHTTP(w, req)
-
-	resp := w.Result()
-	if resp.StatusCode != http.StatusBadRequest {
-		t.Errorf("expected status 400, got %d", resp.StatusCode)
-	}
-
-	body := w.Body.String()
-	if !strings.Contains(body, "Missing container port") {
-		t.Errorf("response should contain 'Missing container port' error message")
-	}
-}
-
-// TestRedirectHandler_HostWithPath tests redirect host that includes a path
-func TestRedirectHandler_HostWithPath(t *testing.T) {
-	handler := NewRedirectHandler()
-
-	// {"h":"https://example.com/api/v1","p":"8080"} encoded with RawURLEncoding
-	base64Str := "eyJoIjoiaHR0cHM6Ly9leGFtcGxlLmNvbS9hcGkvdjEiLCJwIjoiODA4MCJ9"
-
-	req := httptest.NewRequest("GET", "/"+base64Str+"/users", nil)
-	w := httptest.NewRecorder()
-
-	handler.ServeHTTP(w, req)
-
-	resp := w.Result()
-	if resp.StatusCode != http.StatusOK {
-		t.Errorf("expected status 200, got %d", resp.StatusCode)
-	}
-
-	body := w.Body.String()
-	// Verify response is the redirect HTML page (contains the script)
-	if !strings.Contains(body, "Redirecting") {
-		t.Errorf("response should be redirect page")
-	}
-	// Verify redirect base is present (might be JS escaped)
-	if !strings.Contains(body, "example.com") {
-		t.Errorf("response should contain redirect base 'example.com'")
+	if !strings.Contains(body, "Invalid path format") {
+		t.Errorf("response should contain 'Invalid path format' error message")
 	}
 }
 
@@ -303,51 +313,6 @@ func TestParseRedirectHost(t *testing.T) {
 			}
 			if result.Query != tt.expectedQuery {
 				t.Errorf("Query: expected %q, got %q", tt.expectedQuery, result.Query)
-			}
-		})
-	}
-}
-
-// TestDecodeBase64 tests the decodeBase64 function with various padding scenarios
-func TestDecodeBase64(t *testing.T) {
-	// {"h":"https://www.bilibili.com","p":"27890"}
-	expectedJSON := `{"h":"https://www.bilibili.com","p":"27890"}`
-
-	tests := []struct {
-		name   string
-		input  string // base64 encoded string
-		expect string // expected decoded string
-	}{
-		{
-			name:   "with padding (=)",
-			input:  "eyJoIjoiaHR0cHM6Ly93d3cuYmlsaWJpbGkuY29tIiwicCI6IjI3ODkwIn0=",
-			expect: expectedJSON,
-		},
-		{
-			name:   "without padding (stripped =)",
-			input:  "eyJoIjoiaHR0cHM6Ly93d3cuYmlsaWJpbGkuY29tIiwicCI6IjI3ODkwIn0",
-			expect: expectedJSON,
-		},
-		{
-			name:   "simple string with 2 padding",
-			input:  "YWI", // "ab" without padding (should be "YWI=")
-			expect: "ab",
-		},
-		{
-			name:   "simple string with 1 padding",
-			input:  "YWJj", // "abc" no padding needed
-			expect: "abc",
-		},
-	}
-
-	for _, tt := range tests {
-		t.Run(tt.name, func(t *testing.T) {
-			decoded, err := decodeBase64(tt.input)
-			if err != nil {
-				t.Fatalf("decodeBase64 failed: %v", err)
-			}
-			if string(decoded) != tt.expect {
-				t.Errorf("expected %q, got %q", tt.expect, string(decoded))
 			}
 		})
 	}

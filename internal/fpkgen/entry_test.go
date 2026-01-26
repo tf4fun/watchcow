@@ -1,7 +1,6 @@
 package fpkgen
 
 import (
-	"encoding/base64"
 	"encoding/json"
 	"strings"
 	"testing"
@@ -632,34 +631,11 @@ func TestGenerateUIConfigJSON_Redirect(t *testing.T) {
 		t.Errorf("port field should not be present in JSON when redirect mode is enabled")
 	}
 
-	// URL should be CGI path with base64 encoded JSON params
-	// Check that URL starts with expected prefix and contains base64
-	expectedPrefix := "/cgi/ThirdParty/watchcow.testapp/index.cgi/redirect/"
-	if !strings.HasPrefix(entry.URL, expectedPrefix) {
-		t.Errorf("URL should start with %q, got %q", expectedPrefix, entry.URL)
-	}
-
-	// Verify URL ends with path
-	if !strings.HasSuffix(entry.URL, "/dashboard") {
-		t.Errorf("URL should end with /dashboard, got %q", entry.URL)
-	}
-
-	// Extract and verify base64 params
-	remaining := strings.TrimPrefix(entry.URL, expectedPrefix)
-	base64Part := strings.TrimSuffix(remaining, "/dashboard")
-	decoded, err := base64.RawURLEncoding.DecodeString(base64Part)
-	if err != nil {
-		t.Fatalf("failed to decode base64: %v", err)
-	}
-	var params map[string]string
-	if err := json.Unmarshal(decoded, &params); err != nil {
-		t.Fatalf("failed to parse JSON: %v", err)
-	}
-	if params["h"] != "https://external.example.com" {
-		t.Errorf("expected h='https://external.example.com', got %q", params["h"])
-	}
-	if params["p"] != "8080" {
-		t.Errorf("expected p='8080', got %q", params["p"])
+	// URL should be CGI path with appname and entry
+	// Format: /cgi/ThirdParty/<appname>/index.cgi/redirect/<appname>/<entry>[/<path>]
+	expectedURL := "/cgi/ThirdParty/watchcow.testapp/index.cgi/redirect/watchcow.testapp/_/dashboard"
+	if entry.URL != expectedURL {
+		t.Errorf("URL should be %q, got %q", expectedURL, entry.URL)
 	}
 }
 
@@ -690,27 +666,11 @@ func TestGenerateUIConfigJSON_RedirectWithRootPath(t *testing.T) {
 
 	entry := result.URL["watchcow.app"]
 
-	// URL should be CGI path with base64 encoded JSON params (no trailing path for root)
-	expectedPrefix := "/cgi/ThirdParty/watchcow.app/index.cgi/redirect/"
-	if !strings.HasPrefix(entry.URL, expectedPrefix) {
-		t.Errorf("URL should start with %q, got %q", expectedPrefix, entry.URL)
-	}
-
-	// Extract and verify base64 params
-	base64Part := strings.TrimPrefix(entry.URL, expectedPrefix)
-	decoded, err := base64.RawURLEncoding.DecodeString(base64Part)
-	if err != nil {
-		t.Fatalf("failed to decode base64: %v", err)
-	}
-	var params map[string]string
-	if err := json.Unmarshal(decoded, &params); err != nil {
-		t.Fatalf("failed to parse JSON: %v", err)
-	}
-	if params["h"] != "https://myapp.example.com:8443" {
-		t.Errorf("expected h='https://myapp.example.com:8443', got %q", params["h"])
-	}
-	if params["p"] != "3000" {
-		t.Errorf("expected p='3000', got %q", params["p"])
+	// URL should be CGI path with appname and entry (no trailing path for root)
+	// Format: /cgi/ThirdParty/<appname>/index.cgi/redirect/<appname>/<entry>
+	expectedURL := "/cgi/ThirdParty/watchcow.app/index.cgi/redirect/watchcow.app/_"
+	if entry.URL != expectedURL {
+		t.Errorf("URL should be %q, got %q", expectedURL, entry.URL)
 	}
 }
 

@@ -1,22 +1,24 @@
 package server
 
 import (
-	"encoding/base64"
-	"encoding/json"
 	"fmt"
 	"html/template"
 	"net/http"
 	"net/url"
 	"regexp"
 	"strings"
+
+	"watchcow/internal/app"
 )
 
 // RedirectHandler handles redirect requests via HTTP
-type RedirectHandler struct{}
+type RedirectHandler struct {
+	registry *app.Registry
+}
 
-// NewRedirectHandler creates a new redirect handler
-func NewRedirectHandler() *RedirectHandler {
-	return &RedirectHandler{}
+// NewRedirectHandler creates a new redirect handler with registry access
+func NewRedirectHandler(registry *app.Registry) *RedirectHandler {
+	return &RedirectHandler{registry: registry}
 }
 
 // validQueryStringPattern matches safe query string format: key=value(&key=value)*
@@ -70,34 +72,6 @@ func parseRedirectHost(host string) parsedRedirect {
 	return result
 }
 
-// decodeBase64 decodes a base64 string, automatically adding padding if needed.
-// This handles URLs where '=' padding was stripped by URL processing.
-// Supports both URL-safe (-_) and standard (+/) alphabets.
-func decodeBase64(s string) ([]byte, error) {
-	// Add padding if needed (base64 length should be multiple of 4)
-	switch len(s) % 4 {
-	case 2:
-		s += "=="
-	case 3:
-		s += "="
-	}
-
-	// Try URL-safe encoding first (uses - and _ instead of + and /)
-	data, err := base64.URLEncoding.DecodeString(s)
-	if err == nil {
-		return data, nil
-	}
-
-	// Fall back to standard encoding (uses + and /)
-	return base64.StdEncoding.DecodeString(s)
-}
-
-// redirectParams holds the decoded parameters from base64 JSON
-type redirectParams struct {
-	Host string `json:"h"` // redirect host (e.g., https://example.com)
-	Port string `json:"p"` // container port
-}
-
 // redirectTemplateData holds all data for the redirect page template
 type redirectTemplateData struct {
 	// Redirect host components (parsed from config)
@@ -112,45 +86,51 @@ type redirectTemplateData struct {
 }
 
 // ServeHTTP implements http.Handler for redirect requests
-// Expected path format: /<base64_json>[/<path...>]
+// Expected path format: /<appname>/<entry>[/<path...>]
+// Use "_" for default entry (empty name)
 func (h *RedirectHandler) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 	pathInfo := strings.TrimPrefix(r.URL.Path, "/")
 
-	// Parse: <base64_json>[/<path...>]
-	var base64Part, path string
-	slashIdx := strings.Index(pathInfo, "/")
-	if slashIdx != -1 {
-		base64Part = pathInfo[:slashIdx]
-		path = pathInfo[slashIdx:]
-	} else {
-		base64Part = pathInfo
-		path = "/"
-	}
-
-	// Decode base64 - add padding if needed for compatibility with URLs where '=' was stripped
-	jsonBytes, err := decodeBase64(base64Part)
-	if err != nil {
-		h.outputError(w, http.StatusBadRequest, "Invalid base64 encoding: "+err.Error())
+	// Parse: <appname>/<entry>[/<path...>]
+	parts := strings.SplitN(pathInfo, "/", 3)
+	if len(parts) < 2 {
+		h.outputError(w, http.StatusBadRequest, "Invalid path format, expected: /<appname>/<entry>[/<path>]")
 		return
 	}
 
-	// Parse JSON
-	var params redirectParams
-	if err := json.Unmarshal(jsonBytes, &params); err != nil {
-		h.outputError(w, http.StatusBadRequest, fmt.Sprintf("Invalid JSON: %v (decoded: %s)", err, string(jsonBytes)))
+	appName := parts[0]
+	entryName := parts[1]
+	path := "/"
+	if len(parts) == 3 && parts[2] != "" {
+		path = "/" + parts[2]
+	}
+
+	// Convert "_" back to empty string for default entry
+	if entryName == "_" {
+		entryName = ""
+	}
+
+	// Look up app in registry
+	appInstance := h.registry.Get(appName)
+	if appInstance == nil {
+		h.outputError(w, http.StatusNotFound, fmt.Sprintf("App not found: %s", appName))
 		return
 	}
 
-	if params.Host == "" {
-		h.outputError(w, http.StatusBadRequest, "Missing redirect host (h)")
-		return
-	}
-	if params.Port == "" {
-		h.outputError(w, http.StatusBadRequest, "Missing container port (p)")
+	// Look up entry
+	entry := appInstance.GetEntry(entryName)
+	if entry == nil {
+		h.outputError(w, http.StatusNotFound, fmt.Sprintf("Entry not found: %s (app: %s)", entryName, appName))
 		return
 	}
 
-	h.outputHTML(w, params.Host, params.Port, path, sanitizeQueryString(r.URL.RawQuery))
+	// Check if entry has redirect configured
+	if entry.Redirect == "" {
+		h.outputError(w, http.StatusBadRequest, fmt.Sprintf("Entry does not have redirect configured: %s", entryName))
+		return
+	}
+
+	h.outputHTML(w, entry.Redirect, entry.Port, path, sanitizeQueryString(r.URL.RawQuery))
 }
 
 // outputError outputs an error page

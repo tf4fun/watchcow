@@ -3,7 +3,6 @@ package fpkgen
 import (
 	"bytes"
 	"embed"
-	"encoding/base64"
 	"encoding/json"
 	"fmt"
 	"os"
@@ -142,17 +141,13 @@ func GenerateUIConfigJSON(data *TemplateData) ([]byte, error) {
 		if entry.Redirect != "" {
 			// Remove port (omitempty will exclude it from JSON)
 			port = ""
-			// Build CGI URL: /cgi/ThirdParty/<AppName>/index.cgi/redirect/<base64_json>[<path>]
-			// JSON: {"h":"<redirect_host>","p":"<container_port>"}
-			params := map[string]string{
-				"h": entry.Redirect,
-				"p": entry.Port,
+			// Build CGI URL: /cgi/ThirdParty/<AppName>/index.cgi/redirect/<appname>/<entry>[<path>]
+			// Use "_" for default entry (empty name)
+			entryName := entry.Name
+			if entryName == "" {
+				entryName = "_"
 			}
-			paramsJSON, _ := json.Marshal(params)
-			// Use RawURLEncoding (no padding) to avoid '=' in URL which can cause issues
-			paramsBase64 := base64.RawURLEncoding.EncodeToString(paramsJSON)
-
-			cgiPath := "/cgi/ThirdParty/" + data.AppName + "/index.cgi/redirect/" + paramsBase64
+			cgiPath := "/cgi/ThirdParty/" + data.AppName + "/index.cgi/redirect/" + data.AppName + "/" + entryName
 			if entry.Path != "" && entry.Path != "/" {
 				cgiPath += entry.Path
 			}

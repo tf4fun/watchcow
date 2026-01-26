@@ -15,7 +15,7 @@ func NewRouter(redirectHandler http.Handler) chi.Router {
 	r.Use(middleware.Recoverer)
 
 	// Mount redirect handler at /redirect
-	// Path format: /redirect/<base64_json>[/<path...>]
+	// Path format: /redirect/<appname>/<entry>[/<path...>]
 	r.Mount("/redirect", redirectHandler)
 
 	// Future extensibility:
