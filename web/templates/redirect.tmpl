@@ -1,0 +1,213 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>Redirecting...</title>
+    <style>{{.BulmaCSS}}</style>
+</head>
+<body>
+    <section class="hero is-fullheight is-link">
+        <div class="hero-body">
+            <div class="container">
+                <div class="columns is-centered">
+                    <div class="column is-half-tablet is-one-third-desktop">
+                        <div class="box has-text-centered">
+                            <button class="button is-large is-link is-loading mb-4" disabled></button>
+                            <h1 class="title is-4">Detecting Network</h1>
+                            <p class="has-text-grey" id="status">Checking if you're on the local network...</p>
+                            <article class="notification is-danger mt-4" id="error-box" style="display: none;">
+                                <span id="error"></span>
+                            </article>
+                        </div>
+                    </div>
+                </div>
+            </div>
+        </div>
+    </section>
+
+    <script>
+    (function() {
+        // Redirect host components (from config, may include path and query)
+        const REDIRECT_BASE = '{{.RedirectBase | js}}';   // e.g., "https://example.com" or "example.com:8080"
+        const REDIRECT_PATH = '{{.RedirectPath}}';        // e.g., "/api/v1" (sanitized)
+        const REDIRECT_QUERY = '{{.RedirectQuery}}';      // e.g., "x=1" (sanitized)
+        // Container info
+        const CONTAINER_PORT = '{{.ContainerPort | js}}';
+        // Request components
+        const PATH = '{{.Path}}';                         // e.g., "/path2" (sanitized)
+        const QUERY_STRING = '{{.QueryString}}';          // e.g., "y=2" (sanitized)
+
+        const statusEl = document.getElementById('status');
+        const errorEl = document.getElementById('error');
+        const errorBox = document.getElementById('error-box');
+
+        function setStatus(msg) {
+            statusEl.textContent = msg;
+        }
+
+        function showError(msg) {
+            errorEl.textContent = msg;
+            errorBox.style.display = 'block';
+        }
+
+        function redirectTo(url) {
+            setStatus('Redirecting to ' + url + '...');
+            window.location.replace(url);
+        }
+
+        // Merge two paths: /path1 + /path2 = /path1/path2
+        function mergePaths(basePath, extraPath) {
+            if (!basePath && !extraPath) return '/';
+            if (!basePath) return extraPath;
+            if (!extraPath || extraPath === '/') return basePath;
+            // Remove trailing slash from base, keep leading slash on extra
+            const base = basePath.endsWith('/') ? basePath.slice(0, -1) : basePath;
+            const extra = extraPath.startsWith('/') ? extraPath : '/' + extraPath;
+            return base + extra;
+        }
+
+        // Merge two query strings: x=1 + y=2 = x=1&y=2
+        function mergeQueryStrings(q1, q2) {
+            if (!q1 && !q2) return '';
+            if (!q1) return q2;
+            if (!q2) return q1;
+            return q1 + '&' + q2;
+        }
+
+        // Build local URL using current hostname with container port
+        function buildLocalURL() {
+            const hostname = window.location.hostname;
+            const protocol = window.location.protocol;
+            let url = protocol + '//' + hostname + ':' + CONTAINER_PORT + PATH;
+            if (QUERY_STRING) {
+                url += '?' + QUERY_STRING;
+            }
+            return url;
+        }
+
+        // Build external URL with path and query merging
+        function buildExternalURL() {
+            let base = REDIRECT_BASE;
+            // Add protocol if missing
+            if (!base.startsWith('http://') && !base.startsWith('https://')) {
+                base = window.location.protocol + '//' + base;
+            }
+            // Merge paths
+            const mergedPath = mergePaths(REDIRECT_PATH, PATH);
+            // Merge query strings
+            const mergedQuery = mergeQueryStrings(REDIRECT_QUERY, QUERY_STRING);
+
+            let url = base + mergedPath;
+            if (mergedQuery) {
+                url += '?' + mergedQuery;
+            }
+            return url;
+        }
+
+        // Check if we're on a private/local network
+        function isPrivateIP(ip) {
+            // Check for private IP ranges
+            // 10.0.0.0/8
+            if (ip.startsWith('10.')) return true;
+            // 172.16.0.0/12
+            if (ip.startsWith('172.')) {
+                const second = parseInt(ip.split('.')[1], 10);
+                if (second >= 16 && second <= 31) return true;
+            }
+            // 192.168.0.0/16
+            if (ip.startsWith('192.168.')) return true;
+            // localhost
+            if (ip === '127.0.0.1' || ip === 'localhost') return true;
+            return false;
+        }
+
+        // Try to detect if we're on local network by checking hostname
+        function isLocalHostname() {
+            const hostname = window.location.hostname;
+
+            // Check if it's an IP and if so, check if private
+            const ipv4Pattern = /^(\d{1,3}\.){3}\d{1,3}$/;
+            if (ipv4Pattern.test(hostname)) {
+                return isPrivateIP(hostname);
+            }
+
+            // localhost
+            if (hostname === 'localhost' || hostname === '127.0.0.1') {
+                return true;
+            }
+
+            // .local domain (mDNS)
+            if (hostname.endsWith('.local')) {
+                return true;
+            }
+
+            // If no TLD (no dot), likely internal hostname
+            if (!hostname.includes('.')) {
+                return true;
+            }
+
+            return false;
+        }
+
+        // Try to connect to local port to verify accessibility
+        async function checkLocalAccess() {
+            const localURL = buildLocalURL();
+            setStatus('Testing local connection...');
+
+            try {
+                const controller = new AbortController();
+                const timeoutId = setTimeout(() => controller.abort(), 3000);
+
+                // Try a simple fetch with no-cors to check if port is open
+                await fetch(localURL, {
+                    method: 'HEAD',
+                    mode: 'no-cors',
+                    signal: controller.signal
+                });
+
+                clearTimeout(timeoutId);
+                return true;
+            } catch (err) {
+                // fetch with no-cors throws on network error but not on successful connect
+                // So if we get here, it might mean the fetch was aborted or network error
+                if (err.name === 'AbortError') {
+                    return false;
+                }
+                // Other errors might still mean connection was made
+                return false;
+            }
+        }
+
+        // Main logic
+        async function main() {
+            // First, quick check based on hostname
+            if (isLocalHostname()) {
+                setStatus('Local network detected, verifying access...');
+
+                // Try to verify local access
+                const localAccessible = await checkLocalAccess();
+
+                if (localAccessible || isLocalHostname()) {
+                    // On local network, redirect to container port
+                    redirectTo(buildLocalURL());
+                    return;
+                }
+            }
+
+            // Not on local network or local access failed, redirect to external host
+            setStatus('External network detected');
+            redirectTo(buildExternalURL());
+        }
+
+        // Start the detection
+        main().catch(function(err) {
+            showError('Detection failed: ' + err.message + '. Redirecting to external host...');
+            setTimeout(function() {
+                redirectTo(buildExternalURL());
+            }, 2000);
+        });
+    })();
+    </script>
+</body>
+</html>
