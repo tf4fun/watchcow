@@ -13,7 +13,13 @@
                 <div class="columns is-centered">
                     <div class="column is-half-tablet is-one-third-desktop">
                         <div class="box has-text-centered">
-                            <button class="button is-large is-link is-loading mb-4" disabled></button>
+                            <span class="icon is-large has-text-link mb-4">
+                                <svg class="spinner" viewBox="0 0 50 50" width="48" height="48">
+                                    <circle cx="25" cy="25" r="20" fill="none" stroke="currentColor" stroke-width="4" stroke-linecap="round" stroke-dasharray="90,150" stroke-dashoffset="0">
+                                        <animateTransform attributeName="transform" type="rotate" dur="1s" repeatCount="indefinite" from="0 25 25" to="360 25 25"/>
+                                    </circle>
+                                </svg>
+                            </span>
                             <h1 class="title is-4">Detecting Network</h1>
                             <p class="has-text-grey" id="status">Checking if you're on the local network...</p>
                             <article class="notification is-danger mt-4" id="error-box" style="display: none;">
