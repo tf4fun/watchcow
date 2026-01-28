@@ -1,0 +1,242 @@
+{{with .Container}}
+<div class="box">
+    <h2 class="title is-4">{{.Name}}</h2>
+    <p class="subtitle is-6 has-text-grey">{{.Image}}</p>
+
+    {{if .HasLabelConfig}}
+    <article class="notification is-warning">
+        <strong>Label-configured container</strong><br>
+        This container is configured via Docker labels (watchcow.enable=true).
+        To modify settings, update the container labels and restart it.
+    </article>
+
+    <div class="content">
+        <h5>Current Labels:</h5>
+        <table class="table is-narrow is-fullwidth">
+            <tbody>
+            {{range $key, $value := .Labels}}
+            {{if hasPrefix $key "watchcow."}}
+            <tr>
+                <td><code>{{$key}}</code></td>
+                <td>{{$value}}</td>
+            </tr>
+            {{end}}
+            {{end}}
+            </tbody>
+        </table>
+    </div>
+    {{else}}
+
+    <form hx-post="containers/{{urlsafe .Key.String}}"
+          hx-target="#form-message"
+          hx-swap="innerHTML">
+
+        <div id="form-message"></div>
+
+        <h5 class="title is-5 mt-5">App Settings</h5>
+
+        <div class="field">
+            <label class="label">App Name</label>
+            <div class="control">
+                <input class="input" type="text" name="appname"
+                       value="{{$.Config.AppName}}"
+                       placeholder="watchcow.{{.Name}}">
+            </div>
+            <p class="help">Unique identifier for fnOS (e.g., watchcow.myapp)</p>
+        </div>
+
+        <div class="field">
+            <label class="label">Display Name</label>
+            <div class="control">
+                <input class="input" type="text" name="display_name"
+                       value="{{$.Config.DisplayName}}"
+                       placeholder="{{.Name}}">
+            </div>
+            <p class="help">Human-readable name shown in fnOS</p>
+        </div>
+
+        <div class="field">
+            <label class="label">Description</label>
+            <div class="control">
+                <textarea class="textarea" name="description"
+                          placeholder="{{.Image}}">{{$.Config.Description}}</textarea>
+            </div>
+        </div>
+
+        <div class="columns">
+            <div class="column">
+                <div class="field">
+                    <label class="label">Version</label>
+                    <div class="control">
+                        <input class="input" type="text" name="version"
+                               value="{{$.Config.Version}}"
+                               placeholder="1.0.0">
+                    </div>
+                </div>
+            </div>
+            <div class="column">
+                <div class="field">
+                    <label class="label">Maintainer</label>
+                    <div class="control">
+                        <input class="input" type="text" name="maintainer"
+                               value="{{$.Config.Maintainer}}"
+                               placeholder="WatchCow">
+                    </div>
+                </div>
+            </div>
+        </div>
+
+        <h5 class="title is-5 mt-5">Entry Point</h5>
+
+        {{$entry := index $.Config.Entries 0}}
+
+        <div class="field">
+            <label class="label">Title</label>
+            <div class="control">
+                <input class="input" type="text" name="entry_title"
+                       value="{{$entry.Title}}"
+                       placeholder="{{$.Config.DisplayName}}">
+            </div>
+            <p class="help">Entry point title (defaults to display name)</p>
+        </div>
+
+        <div class="columns">
+            <div class="column is-one-quarter">
+                <div class="field">
+                    <label class="label">Protocol</label>
+                    <div class="control">
+                        <div class="select is-fullwidth">
+                            <select name="entry_protocol">
+                                <option value="http" {{if eq $entry.Protocol "http"}}selected{{end}}>HTTP</option>
+                                <option value="https" {{if eq $entry.Protocol "https"}}selected{{end}}>HTTPS</option>
+                            </select>
+                        </div>
+                    </div>
+                </div>
+            </div>
+            <div class="column is-one-quarter">
+                <div class="field">
+                    <label class="label">Port</label>
+                    <div class="control">
+                        <div class="select is-fullwidth">
+                            <select name="entry_port">
+                                {{range $cport, $hport := .Ports}}
+                                <option value="{{$cport}}" {{if eq $entry.Port $cport}}selected{{end}}>{{$cport}} (→{{$hport}})</option>
+                                {{end}}
+                                {{if not .Ports}}
+                                <option value="">No ports exposed</option>
+                                {{end}}
+                            </select>
+                        </div>
+                    </div>
+                </div>
+            </div>
+            <div class="column">
+                <div class="field">
+                    <label class="label">Path</label>
+                    <div class="control">
+                        <input class="input" type="text" name="entry_path"
+                               value="{{$entry.Path}}"
+                               placeholder="/">
+                    </div>
+                </div>
+            </div>
+        </div>
+
+        <div class="columns">
+            <div class="column">
+                <div class="field">
+                    <label class="label">UI Type</label>
+                    <div class="control">
+                        <div class="select is-fullwidth">
+                            <select name="entry_ui_type">
+                                <option value="url" {{if eq $entry.UIType "url"}}selected{{end}}>New Tab (url)</option>
+                                <option value="iframe" {{if eq $entry.UIType "iframe"}}selected{{end}}>Desktop Window (iframe)</option>
+                            </select>
+                        </div>
+                    </div>
+                </div>
+            </div>
+            <div class="column">
+                <div class="field">
+                    <label class="label">File Types</label>
+                    <div class="control">
+                        <input class="input" type="text" name="entry_file_types"
+                               value="{{range $i, $ft := $entry.FileTypes}}{{if $i}},{{end}}{{$ft}}{{end}}"
+                               placeholder="pdf,doc,txt">
+                    </div>
+                    <p class="help">Comma-separated file types for right-click menu</p>
+                </div>
+            </div>
+        </div>
+
+        <div class="field">
+            <label class="label">External Redirect</label>
+            <div class="control">
+                <input class="input" type="text" name="entry_redirect"
+                       value="{{$entry.Redirect}}"
+                       placeholder="https://example.com">
+            </div>
+            <p class="help">External URL for remote access (via CGI redirect)</p>
+        </div>
+
+        <div class="field">
+            <label class="checkbox">
+                <input type="checkbox" name="entry_all_users" value="true" {{if $entry.AllUsers}}checked{{end}}>
+                Allow all users to access
+            </label>
+        </div>
+
+        <div class="field">
+            <label class="checkbox">
+                <input type="checkbox" name="entry_no_display" value="true" {{if $entry.NoDisplay}}checked{{end}}>
+                Hide from desktop (only show in right-click menu)
+            </label>
+        </div>
+
+        <h5 class="title is-5 mt-5">Icon</h5>
+
+        <div class="field">
+            <div class="file has-name">
+                <label class="file-label">
+                    <input class="file-input" type="file" name="icon" accept="image/*"
+                           hx-post="containers/{{urlsafe .Key.String}}/icon"
+                           hx-target="#icon-preview"
+                           hx-encoding="multipart/form-data">
+                    <span class="file-cta">
+                        <span class="file-label">Choose icon...</span>
+                    </span>
+                </label>
+            </div>
+            <div id="icon-preview" class="mt-2">
+                {{if $.Config.IconBase64}}
+                <img src="data:image/png;base64,{{$.Config.IconBase64}}" alt="Icon" style="max-width: 64px; max-height: 64px;">
+                {{end}}
+            </div>
+            <p class="help">Upload an icon (will be resized to 256x256)</p>
+        </div>
+
+        <hr>
+
+        <div class="field is-grouped">
+            <div class="control">
+                <button class="button is-primary" type="submit">
+                    <span class="icon"><svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 24 24" width="16" height="16" fill="currentColor"><path d="M17 3H5c-1.11 0-2 .9-2 2v14c0 1.1.89 2 2 2h14c1.1 0 2-.9 2-2V7l-4-4zm-5 16c-1.66 0-3-1.34-3-3s1.34-3 3-3 3 1.34 3 3-1.34 3-3 3zm3-10H5V5h10v4z"/></svg></span>
+                    <span>Save Configuration</span>
+                </button>
+            </div>
+            <div class="control">
+                <button class="button is-danger is-outlined" type="button"
+                        hx-delete="containers/{{urlsafe .Key.String}}"
+                        hx-target="#container-form"
+                        hx-swap="innerHTML"
+                        hx-confirm="Are you sure you want to delete this configuration?">
+                    <span class="icon"><svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 24 24" width="16" height="16" fill="currentColor"><path d="M6 19c0 1.1.9 2 2 2h8c1.1 0 2-.9 2-2V7H6v12zM19 4h-3.5l-1-1h-5l-1 1H5v2h14V4z"/></svg></span>
+                    <span>Delete</span>
+                </button>
+            </div>
+        </div>
+    </form>
+    {{end}}
+</div>
+{{end}}

@@ -7,8 +7,13 @@ import (
 	"github.com/go-chi/chi/v5/middleware"
 )
 
-// NewRouter creates a new chi router with the redirect handler mounted
-func NewRouter(redirectHandler http.Handler) chi.Router {
+// DashboardMounter is an interface for mounting dashboard routes.
+type DashboardMounter interface {
+	Mount(r chi.Router)
+}
+
+// NewRouter creates a new chi router with handlers mounted
+func NewRouter(redirectHandler http.Handler, dashboardHandler DashboardMounter) chi.Router {
 	r := chi.NewRouter()
 
 	// Middleware
@@ -18,9 +23,12 @@ func NewRouter(redirectHandler http.Handler) chi.Router {
 	// Path format: /redirect/<appname>/<entry>[/<path...>]
 	r.Mount("/redirect", redirectHandler)
 
-	// Future extensibility:
-	// r.Mount("/api/status", statusHandler)
-	// r.Mount("/api/health", healthHandler)
+	// Mount dashboard handler at /
+	if dashboardHandler != nil {
+		r.Group(func(r chi.Router) {
+			dashboardHandler.Mount(r)
+		})
+	}
 
 	return r
 }

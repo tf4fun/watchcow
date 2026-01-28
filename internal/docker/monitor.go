@@ -5,17 +5,53 @@ import (
 	"fmt"
 	"log/slog"
 	"os"
+	"sort"
 	"strings"
+	"sync"
 	"time"
 
 	"github.com/docker/docker/api/types/container"
 	"github.com/docker/docker/api/types/events"
 	"github.com/docker/docker/api/types/filters"
 	"github.com/docker/docker/client"
+	"github.com/docker/go-connections/nat"
 
 	"watchcow/internal/app"
 	"watchcow/internal/fpkgen"
 )
+
+// ConfigProvider provides stored container configurations.
+// Implemented by server.DashboardStorage.
+type ConfigProvider interface {
+	// GetByKey returns the stored config for a container key, or nil if not found.
+	GetByKey(key string) *StoredConfig
+}
+
+// StoredConfig represents a saved container configuration (from dashboard).
+type StoredConfig struct {
+	AppName     string
+	DisplayName string
+	Description string
+	Version     string
+	Maintainer  string
+	Entries     []StoredEntry
+	IconBase64  string
+}
+
+// StoredEntry represents a saved entry configuration.
+type StoredEntry struct {
+	Name       string
+	Title      string
+	Protocol   string
+	Port       string
+	Path       string
+	UIType     string
+	AllUsers   bool
+	FileTypes  []string
+	NoDisplay  bool
+	Redirect   string
+	IconBase64 string
+}
 
 // AppOperation represents an operation to be processed serially
 type AppOperation struct {
@@ -25,18 +61,20 @@ type AppOperation struct {
 	ContainerID   string
 	ContainerName string
 	Labels        map[string]string
+	StoredConfig  *StoredConfig // Config from dashboard storage (if no labels)
 	ResultCh      chan error
 }
 
 // Monitor watches Docker containers and manages fnOS app installation
 type Monitor struct {
-	cli       *client.Client
-	generator *fpkgen.Generator
-	installer *fpkgen.Installer
-	stopCh    chan struct{}
+	cli            *client.Client
+	generator      *fpkgen.Generator
+	installer      *fpkgen.Installer
+	configProvider ConfigProvider
+	stopCh         chan struct{}
 
-	// Track container states - only accessed from operation worker goroutine
-	containers map[string]*ContainerState // map[containerID]state
+	// Track all container states
+	containers sync.Map // map[containerID]*ContainerState
 
 	// App registry for runtime app info lookup
 	registry *app.Registry
@@ -45,13 +83,17 @@ type Monitor struct {
 	opQueue chan *AppOperation
 }
 
-// ContainerState tracks the state of a monitored container
+// ContainerState tracks the state of a container
 type ContainerState struct {
 	ContainerID   string
 	ContainerName string
-	AppName       string
-	Installed     bool
+	Image         string
+	State         string            // "running", "exited", etc.
+	Ports         map[string]string // containerPort -> hostPort
 	Labels        map[string]string
+	// watchcow-specific state
+	AppName   string
+	Installed bool
 }
 
 // NewMonitor creates a new Docker monitor
@@ -79,14 +121,90 @@ func NewMonitor() (*Monitor, error) {
 	}
 
 	return &Monitor{
-		cli:        cli,
-		generator:  generator,
-		installer:  installer,
-		stopCh:     make(chan struct{}),
-		containers: make(map[string]*ContainerState),
-		registry:   app.NewRegistry(),
-		opQueue:    make(chan *AppOperation, 100),
+		cli:       cli,
+		generator: generator,
+		installer: installer,
+		stopCh:    make(chan struct{}),
+		registry:  app.NewRegistry(),
+		opQueue:   make(chan *AppOperation, 100),
 	}, nil
+}
+
+// SetConfigProvider sets the config provider for dashboard storage lookup.
+func (m *Monitor) SetConfigProvider(provider ConfigProvider) {
+	m.configProvider = provider
+}
+
+// TriggerInstall triggers app installation for a container using stored config.
+// Called by dashboard after saving config.
+func (m *Monitor) TriggerInstall(containerID string, storedConfig *StoredConfig) {
+	// Get container state
+	v, ok := m.containers.Load(containerID)
+	if !ok {
+		slog.Debug("Container not found for trigger install", "id", containerID)
+		return
+	}
+	state := v.(*ContainerState)
+
+	// Only trigger for running containers
+	if state.State != "running" {
+		slog.Debug("Container not running, skipping trigger install", "id", containerID, "state", state.State)
+		return
+	}
+
+	// Check if already installed
+	if state.Installed {
+		slog.Debug("Container already installed, skipping trigger install", "id", containerID)
+		return
+	}
+
+	slog.Info("Triggering app install from dashboard", "container", state.ContainerName)
+	m.queueOperation(&AppOperation{
+		Type:          "container_start",
+		ContainerID:   containerID,
+		ContainerName: state.ContainerName,
+		Labels:        state.Labels,
+		StoredConfig:  storedConfig,
+	})
+}
+
+// GetContainerByKey finds a container by its key (image|ports).
+func (m *Monitor) GetContainerByKey(key string) (containerID string, found bool) {
+	m.containers.Range(func(k, v any) bool {
+		state := v.(*ContainerState)
+		containerKey := makeContainerKey(state.Image, state.Ports)
+		if containerKey == key {
+			containerID = state.ContainerID
+			found = true
+			return false // stop iteration
+		}
+		return true
+	})
+	return
+}
+
+// makeContainerKey creates a container key from image and ports.
+func makeContainerKey(image string, ports map[string]string) string {
+	if len(ports) == 0 {
+		return image + "|"
+	}
+
+	var portPairs []string
+	for containerPort, hostPort := range ports {
+		portPairs = append(portPairs, fmt.Sprintf("%s:%s", containerPort, hostPort))
+	}
+	sort.Strings(portPairs)
+
+	return image + "|" + strings.Join(portPairs, ",")
+}
+
+// getStoredConfig looks up stored config for a container.
+func (m *Monitor) getStoredConfig(image string, ports map[string]string) *StoredConfig {
+	if m.configProvider == nil {
+		return nil
+	}
+	key := makeContainerKey(image, ports)
+	return m.configProvider.GetByKey(key)
 }
 
 // runOperationWorker processes all operations sequentially (single goroutine owns containers map)
@@ -117,21 +235,31 @@ func (m *Monitor) runOperationWorker(ctx context.Context) {
 
 // processContainerStart handles container start - check if installed, start or generate
 func (m *Monitor) processContainerStart(ctx context.Context, op *AppOperation) {
-	appName := getAppNameFromLabels(op.Labels, op.ContainerName)
+	// Determine app name based on config source
+	var appName string
+	if op.StoredConfig != nil {
+		appName = op.StoredConfig.AppName
+	} else {
+		appName = getAppNameFromLabels(op.Labels, op.ContainerName)
+	}
 
 	// Check if already installed in fnOS
 	if m.installer != nil && m.installer.IsAppInstalled(appName) {
 		// Already installed, register and start it
 		slog.Info("App already installed, starting", "app", appName)
-		m.containers[op.ContainerID] = &ContainerState{
+		m.containers.Store(op.ContainerID, &ContainerState{
 			ContainerID:   op.ContainerID,
 			ContainerName: op.ContainerName,
 			AppName:       appName,
 			Installed:     true,
 			Labels:        op.Labels,
+		})
+		// Register app in registry
+		if op.StoredConfig != nil {
+			m.registerAppFromStoredConfig(op.StoredConfig, op.ContainerID, op.ContainerName)
+		} else {
+			m.registerAppFromLabels(appName, op.ContainerID, op.ContainerName, op.Labels)
 		}
-		// Register app in registry (from labels)
-		m.registerAppFromLabels(appName, op.ContainerID, op.ContainerName, op.Labels)
 		if m.installer != nil {
 			m.installer.StartApp(appName)
 		}
@@ -139,26 +267,37 @@ func (m *Monitor) processContainerStart(ctx context.Context, op *AppOperation) {
 	}
 
 	// Not installed, register as pending
-	m.containers[op.ContainerID] = &ContainerState{
+	m.containers.Store(op.ContainerID, &ContainerState{
 		ContainerID:   op.ContainerID,
 		ContainerName: op.ContainerName,
 		AppName:       appName,
 		Installed:     false,
 		Labels:        op.Labels,
-	}
+	})
 
-	// Generate app package (this blocks the worker, but ensures serialization)
+	// Generate app package
 	time.Sleep(2 * time.Second)
 
-	config, appDir, err := m.generator.GenerateFromContainer(ctx, op.ContainerID)
+	var config *fpkgen.AppConfig
+	var appDir string
+	var err error
+
+	if op.StoredConfig != nil {
+		// Generate from stored config
+		config, appDir, err = m.generateFromStoredConfig(ctx, op.ContainerID, op.StoredConfig)
+	} else {
+		// Generate from container labels
+		config, appDir, err = m.generator.GenerateFromContainer(ctx, op.ContainerID)
+	}
+
 	if err != nil {
 		slog.Error("Failed to generate fnOS app", "container", op.ContainerName, "error", err)
-		delete(m.containers, op.ContainerID)
+		m.containers.Delete(op.ContainerID)
 		return
 	}
 
 	// Check if container was destroyed during generation
-	if _, exists := m.containers[op.ContainerID]; !exists {
+	if _, exists := m.containers.Load(op.ContainerID); !exists {
 		slog.Info("Container destroyed during generation, skipping install", "container", op.ContainerName)
 		os.RemoveAll(appDir)
 		return
@@ -170,11 +309,12 @@ func (m *Monitor) processContainerStart(ctx context.Context, op *AppOperation) {
 		if err := m.installer.InstallLocal(appDir); err != nil {
 			slog.Error("Failed to install fnOS app", "app", config.AppName, "error", err)
 		} else {
-			if state, exists := m.containers[op.ContainerID]; exists {
+			if v, exists := m.containers.Load(op.ContainerID); exists {
+				state := v.(*ContainerState)
 				state.Installed = true
 				state.AppName = config.AppName
 			}
-			// Register app in registry (from config)
+			// Register app in registry
 			m.registerAppFromConfig(config, op.ContainerID, op.ContainerName)
 			slog.Info("Successfully installed fnOS app", "app", config.AppName)
 		}
@@ -182,14 +322,109 @@ func (m *Monitor) processContainerStart(ctx context.Context, op *AppOperation) {
 	os.RemoveAll(appDir)
 }
 
+// generateFromStoredConfig generates an app package from stored config.
+func (m *Monitor) generateFromStoredConfig(ctx context.Context, containerID string, storedCfg *StoredConfig) (*fpkgen.AppConfig, string, error) {
+	// Inspect container for runtime info
+	info, err := m.cli.ContainerInspect(ctx, containerID)
+	if err != nil {
+		return nil, "", fmt.Errorf("failed to inspect container: %w", err)
+	}
+
+	// Convert StoredConfig to fpkgen.AppConfig
+	config := &fpkgen.AppConfig{
+		AppName:       storedCfg.AppName,
+		DisplayName:   storedCfg.DisplayName,
+		Description:   storedCfg.Description,
+		Version:       storedCfg.Version,
+		Maintainer:    storedCfg.Maintainer,
+		ContainerID:   containerID,
+		ContainerName: strings.TrimPrefix(info.Name, "/"),
+		Image:         info.Config.Image,
+		Icon:          storedCfg.IconBase64, // Will be handled as base64
+		Entries:       make([]fpkgen.Entry, 0, len(storedCfg.Entries)),
+	}
+
+	// Convert entries
+	for _, e := range storedCfg.Entries {
+		entry := fpkgen.Entry{
+			Name:      e.Name,
+			Title:     e.Title,
+			Protocol:  e.Protocol,
+			Port:      e.Port,
+			Path:      e.Path,
+			UIType:    e.UIType,
+			AllUsers:  e.AllUsers,
+			FileTypes: e.FileTypes,
+			NoDisplay: e.NoDisplay,
+			Redirect:  e.Redirect,
+			Icon:      e.IconBase64,
+		}
+		config.Entries = append(config.Entries, entry)
+	}
+
+	// Set default entry title if empty
+	if len(config.Entries) > 0 && config.Entries[0].Title == "" {
+		config.Entries[0].Title = config.DisplayName
+	}
+
+	// Create temp directory for app package
+	appDir, err := os.MkdirTemp("", "watchcow-app-*")
+	if err != nil {
+		return nil, "", fmt.Errorf("failed to create temp dir: %w", err)
+	}
+
+	// Generate package files
+	if err := m.generator.GenerateFromConfig(config, appDir); err != nil {
+		os.RemoveAll(appDir)
+		return nil, "", fmt.Errorf("failed to generate package: %w", err)
+	}
+
+	return config, appDir, nil
+}
+
+// registerAppFromStoredConfig creates and registers an App instance from stored config.
+func (m *Monitor) registerAppFromStoredConfig(storedCfg *StoredConfig, containerID, containerName string) {
+	appInstance := &app.App{
+		AppName:       storedCfg.AppName,
+		DisplayName:   storedCfg.DisplayName,
+		Description:   storedCfg.Description,
+		Version:       storedCfg.Version,
+		Maintainer:    storedCfg.Maintainer,
+		ContainerID:   containerID,
+		ContainerName: containerName,
+		Status:        app.StatusRunning,
+		Entries:       make([]app.Entry, 0, len(storedCfg.Entries)),
+	}
+
+	for _, e := range storedCfg.Entries {
+		entry := app.Entry{
+			Name:      e.Name,
+			Title:     e.Title,
+			Protocol:  e.Protocol,
+			Port:      e.Port,
+			Path:      e.Path,
+			UIType:    e.UIType,
+			AllUsers:  e.AllUsers,
+			FileTypes: e.FileTypes,
+			NoDisplay: e.NoDisplay,
+			Redirect:  e.Redirect,
+		}
+		appInstance.Entries = append(appInstance.Entries, entry)
+	}
+
+	m.registry.Register(appInstance)
+	slog.Debug("Registered app in registry from stored config", "app", storedCfg.AppName, "entries", len(appInstance.Entries))
+}
+
 // processInstall handles install operation
 func (m *Monitor) processInstall(op *AppOperation) {
-	state, exists := m.containers[op.ContainerID]
+	v, exists := m.containers.Load(op.ContainerID)
 	if !exists {
 		slog.Info("Container no longer tracked, skipping install", "app", op.AppName)
 		os.RemoveAll(op.AppDir)
 		return
 	}
+	state := v.(*ContainerState)
 
 	slog.Info("Installing fnOS app", "app", op.AppName)
 	if m.installer != nil {
@@ -206,9 +441,14 @@ func (m *Monitor) processInstall(op *AppOperation) {
 
 // processStop handles stop operation
 func (m *Monitor) processStop(op *AppOperation) {
-	state, exists := m.containers[op.ContainerID]
-	if !exists || !state.Installed {
-		slog.Debug("Container not tracked or not installed, skipping stop", "id", op.ContainerID)
+	v, exists := m.containers.Load(op.ContainerID)
+	if !exists {
+		slog.Debug("Container not tracked, skipping stop", "id", op.ContainerID)
+		return
+	}
+	state := v.(*ContainerState)
+	if !state.Installed {
+		slog.Debug("Container not installed, skipping stop", "id", op.ContainerID)
 		return
 	}
 	slog.Info("Stopping fnOS app", "app", state.AppName)
@@ -219,17 +459,18 @@ func (m *Monitor) processStop(op *AppOperation) {
 
 // processDestroy handles destroy operation
 func (m *Monitor) processDestroy(op *AppOperation) {
-	state, exists := m.containers[op.ContainerID]
+	v, exists := m.containers.Load(op.ContainerID)
 	if !exists {
 		slog.Debug("Container not tracked, skipping destroy", "id", op.ContainerID)
 		return
 	}
+	state := v.(*ContainerState)
 
 	appName := state.AppName
 	wasInstalled := state.Installed
 
 	// Remove from tracking
-	delete(m.containers, op.ContainerID)
+	m.containers.Delete(op.ContainerID)
 
 	// Unregister from app registry
 	m.registry.Unregister(appName)
@@ -310,25 +551,64 @@ func (m *Monitor) handleDockerEvent(ctx context.Context, event events.Message) {
 	case "start":
 		slog.Info("Container started", "container", containerName, "id", containerID)
 
-		// Inspect container to get full labels (event.Actor.Attributes is incomplete)
+		// Inspect container to get full info
 		info, err := m.cli.ContainerInspect(ctx, containerID)
 		if err != nil {
 			slog.Debug("Failed to inspect container", "container", containerName, "error", err)
 			return
 		}
 
-		labels := info.Config.Labels
-		if shouldInstall(labels) {
+		// Extract port mappings
+		ports := extractPorts(info.NetworkSettings.Ports)
+
+		// Update container state
+		v, loaded := m.containers.Load(containerID)
+		var state *ContainerState
+		if loaded {
+			state = v.(*ContainerState)
+		} else {
+			state = &ContainerState{
+				ContainerID:   containerID,
+				ContainerName: containerName,
+			}
+		}
+		state.Image = info.Config.Image
+		state.State = "running"
+		state.Ports = ports
+		state.Labels = info.Config.Labels
+		m.containers.Store(containerID, state)
+
+		// Check if should install: either has label config or has stored config
+		hasLabelConfig := shouldInstall(info.Config.Labels)
+		storedConfig := m.getStoredConfig(info.Config.Image, ports)
+
+		if hasLabelConfig {
 			m.queueOperation(&AppOperation{
 				Type:          "container_start",
 				ContainerID:   containerID,
 				ContainerName: containerName,
-				Labels:        labels,
+				Labels:        info.Config.Labels,
+			})
+		} else if storedConfig != nil {
+			m.queueOperation(&AppOperation{
+				Type:          "container_start",
+				ContainerID:   containerID,
+				ContainerName: containerName,
+				Labels:        info.Config.Labels,
+				StoredConfig:  storedConfig,
 			})
 		}
 
 	case "stop", "die":
 		slog.Info("Container stopped", "container", containerName, "id", containerID)
+
+		// Update state
+		if v, ok := m.containers.Load(containerID); ok {
+			state := v.(*ContainerState)
+			state.State = "exited"
+		}
+
+		// Queue stop operation
 		m.queueOperation(&AppOperation{
 			Type:        "stop",
 			ContainerID: containerID,
@@ -336,11 +616,29 @@ func (m *Monitor) handleDockerEvent(ctx context.Context, event events.Message) {
 
 	case "destroy":
 		slog.Info("Container destroyed", "container", containerName, "id", containerID)
+
+		// Remove from tracking
+		m.containers.Delete(containerID)
+
+		// Queue destroy operation
 		m.queueOperation(&AppOperation{
 			Type:        "destroy",
 			ContainerID: containerID,
 		})
 	}
+}
+
+// extractPorts extracts port mappings from container network settings
+func extractPorts(portMap nat.PortMap) map[string]string {
+	ports := make(map[string]string)
+	for port, bindings := range portMap {
+		if len(bindings) > 0 && bindings[0].HostPort != "" {
+			containerPort := port.Port()
+			hostPort := bindings[0].HostPort
+			ports[containerPort] = hostPort
+		}
+	}
+	return ports
 }
 
 // getAppNameFromLabels extracts appName from labels
@@ -364,9 +662,9 @@ func shouldInstall(labels map[string]string) bool {
 	return installMode == "fnos" || installMode == "true" || installMode == ""
 }
 
-// scanContainers scans all running containers
+// scanContainers scans all containers and populates the state map
 func (m *Monitor) scanContainers(ctx context.Context) {
-	containers, err := m.cli.ContainerList(ctx, container.ListOptions{})
+	containers, err := m.cli.ContainerList(ctx, container.ListOptions{All: true})
 	if err != nil {
 		slog.Error("Failed to list containers", "error", err)
 		return
@@ -378,14 +676,51 @@ func (m *Monitor) scanContainers(ctx context.Context) {
 		containerID := ctr.ID[:12]
 		containerName := strings.TrimPrefix(ctr.Names[0], "/")
 
-		// Check if should be installed
-		if shouldInstall(ctr.Labels) {
-			slog.Info("Found container to install", "container", containerName)
+		// Extract port mappings
+		ports := make(map[string]string)
+		for _, p := range ctr.Ports {
+			if p.PublicPort > 0 {
+				containerPort := fmt.Sprintf("%d", p.PrivatePort)
+				hostPort := fmt.Sprintf("%d", p.PublicPort)
+				ports[containerPort] = hostPort
+			}
+		}
+
+		// Add to state map
+		m.containers.Store(containerID, &ContainerState{
+			ContainerID:   containerID,
+			ContainerName: containerName,
+			Image:         ctr.Image,
+			State:         ctr.State,
+			Ports:         ports,
+			Labels:        ctr.Labels,
+		})
+
+		// Only process running containers
+		if ctr.State != "running" {
+			continue
+		}
+
+		// Check if should install: either has label config or has stored config
+		hasLabelConfig := shouldInstall(ctr.Labels)
+		storedConfig := m.getStoredConfig(ctr.Image, ports)
+
+		if hasLabelConfig {
+			slog.Info("Found label-configured container", "container", containerName)
 			m.queueOperation(&AppOperation{
 				Type:          "container_start",
 				ContainerID:   containerID,
 				ContainerName: containerName,
 				Labels:        ctr.Labels,
+			})
+		} else if storedConfig != nil {
+			slog.Info("Found storage-configured container", "container", containerName)
+			m.queueOperation(&AppOperation{
+				Type:          "container_start",
+				ContainerID:   containerID,
+				ContainerName: containerName,
+				Labels:        ctr.Labels,
+				StoredConfig:  storedConfig,
 			})
 		}
 	}
@@ -475,4 +810,32 @@ func (m *Monitor) registerAppFromLabels(appName, containerID, containerName stri
 
 	m.registry.Register(appInstance)
 	slog.Debug("Registered app in registry from labels", "app", appName, "entries", len(appInstance.Entries))
+}
+
+// ContainerInfo represents container information for the dashboard.
+type ContainerInfo struct {
+	ID     string
+	Name   string
+	Image  string
+	State  string
+	Ports  map[string]string // containerPort -> hostPort
+	Labels map[string]string
+}
+
+// ListAllContainers returns all containers from the internal state map.
+func (m *Monitor) ListAllContainers(ctx context.Context) ([]ContainerInfo, error) {
+	var result []ContainerInfo
+	m.containers.Range(func(key, value any) bool {
+		state := value.(*ContainerState)
+		result = append(result, ContainerInfo{
+			ID:     state.ContainerID,
+			Name:   state.ContainerName,
+			Image:  state.Image,
+			State:  state.State,
+			Ports:  state.Ports,
+			Labels: state.Labels,
+		})
+		return true
+	})
+	return result, nil
 }

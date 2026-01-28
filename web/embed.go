@@ -2,5 +2,5 @@ package web
 
 import "embed"
 
-//go:embed css/*.css templates/*.tmpl
+//go:embed css/*.css templates/*.tmpl js/*.js
 var Assets embed.FS

@@ -26,6 +26,31 @@ func getDefaultSocketPath() string {
 	return fallbackSocketPath
 }
 
+// monitorAdapter adapts docker.Monitor to server.ContainerLister
+type monitorAdapter struct {
+	monitor *docker.Monitor
+}
+
+func (a *monitorAdapter) ListAllContainers(ctx context.Context) ([]server.RawContainerInfo, error) {
+	containers, err := a.monitor.ListAllContainers(ctx)
+	if err != nil {
+		return nil, err
+	}
+
+	result := make([]server.RawContainerInfo, len(containers))
+	for i, c := range containers {
+		result[i] = server.RawContainerInfo{
+			ID:     c.ID,
+			Name:   c.Name,
+			Image:  c.Image,
+			State:  c.State,
+			Ports:  c.Ports,
+			Labels: c.Labels,
+		}
+	}
+	return result, nil
+}
+
 func main() {
 	// Define flags
 	mode := flag.String("mode", "server", "Run mode: server or cgi")
@@ -91,11 +116,28 @@ func runServerMode(socketPath string, debug bool) {
 		os.Exit(1)
 	}
 
-	// Step 2: Create HTTP handler and router (redirect handler needs registry from monitor)
-	redirectHandler := server.NewRedirectHandler(monitor.Registry())
-	router := server.NewRouter(redirectHandler)
+	// Step 2: Create dashboard storage and connect to monitor
+	dashboardStorage, err := server.NewDashboardStorage()
+	if err != nil {
+		slog.Error("Failed to create dashboard storage", "error", err)
+		os.Exit(1)
+	}
 
-	// Step 3: Create server with monitor injected
+	// Connect storage to monitor for config lookup
+	monitor.SetConfigProvider(dashboardStorage)
+
+	// Step 3: Create HTTP handlers and router
+	redirectHandler := server.NewRedirectHandler(monitor.Registry())
+
+	dashboardHandler, err := server.NewDashboardHandler(dashboardStorage, &monitorAdapter{monitor}, monitor)
+	if err != nil {
+		slog.Error("Failed to create dashboard handler", "error", err)
+		os.Exit(1)
+	}
+
+	router := server.NewRouter(redirectHandler, dashboardHandler)
+
+	// Step 4: Create server with monitor injected
 	srv := server.New(socketPath, router, monitor)
 
 	// Step 4: Start server (which will start monitor after socket is ready)

@@ -8,6 +8,8 @@ maintainer      = tf4fun
 maintainer_url  = https://github.com/tf4fun
 distributor     = tf4fun
 distributor_url = https://github.com/tf4fun
+desktop_uidir         = ui
+desktop_applaunchname = watchcow
 
 ctl_stop     = true
 checkport    = false
