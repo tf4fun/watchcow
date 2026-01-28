@@ -160,7 +160,7 @@ func (m *Monitor) TriggerInstall(containerID string, storedConfig *StoredConfig)
 
 	slog.Info("Triggering app install from dashboard", "container", state.ContainerName)
 	m.queueOperation(&AppOperation{
-		Type:          "container_start",
+		Type:          "dashboard_install",
 		ContainerID:   containerID,
 		ContainerName: state.ContainerName,
 		Labels:        state.Labels,
@@ -217,11 +217,8 @@ func (m *Monitor) runOperationWorker(ctx context.Context) {
 			return
 		case op := <-m.opQueue:
 			switch op.Type {
-			case "container_start":
+			case "container_start", "dashboard_install":
 				m.processContainerStart(ctx, op)
-
-			case "install":
-				m.processInstall(op)
 
 			case "stop":
 				m.processStop(op)
@@ -414,29 +411,6 @@ func (m *Monitor) registerAppFromStoredConfig(storedCfg *StoredConfig, container
 
 	m.registry.Register(appInstance)
 	slog.Debug("Registered app in registry from stored config", "app", storedCfg.AppName, "entries", len(appInstance.Entries))
-}
-
-// processInstall handles install operation
-func (m *Monitor) processInstall(op *AppOperation) {
-	v, exists := m.containers.Load(op.ContainerID)
-	if !exists {
-		slog.Info("Container no longer tracked, skipping install", "app", op.AppName)
-		os.RemoveAll(op.AppDir)
-		return
-	}
-	state := v.(*ContainerState)
-
-	slog.Info("Installing fnOS app", "app", op.AppName)
-	if m.installer != nil {
-		if err := m.installer.InstallLocal(op.AppDir); err != nil {
-			slog.Error("Failed to install fnOS app", "app", op.AppName, "error", err)
-		} else {
-			state.Installed = true
-			state.AppName = op.AppName
-			slog.Info("Successfully installed fnOS app", "app", op.AppName)
-		}
-	}
-	os.RemoveAll(op.AppDir)
 }
 
 // processStop handles stop operation
