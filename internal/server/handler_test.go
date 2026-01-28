@@ -23,8 +23,8 @@ func (m *mockContainerLister) ListAllContainers(ctx context.Context) ([]RawConta
 	return m.containers, nil
 }
 
-// mockInstallTrigger implements InstallTrigger for testing
-type mockInstallTrigger struct {
+// mockAppTrigger implements AppTrigger for testing
+type mockAppTrigger struct {
 	triggerCalls []triggerCall
 }
 
@@ -33,12 +33,16 @@ type triggerCall struct {
 	storedConfig *docker.StoredConfig
 }
 
-func (m *mockInstallTrigger) TriggerInstall(containerID string, storedConfig *docker.StoredConfig) {
+func (m *mockAppTrigger) TriggerInstall(containerID string, storedConfig *docker.StoredConfig) {
 	m.triggerCalls = append(m.triggerCalls, triggerCall{containerID, storedConfig})
 }
 
-func newMockInstallTrigger() *mockInstallTrigger {
-	return &mockInstallTrigger{
+func (m *mockAppTrigger) TriggerUninstall(appName string) {
+	// Track uninstall calls if needed
+}
+
+func newMockAppTrigger() *mockAppTrigger {
+	return &mockAppTrigger{
 		triggerCalls: make([]triggerCall, 0),
 	}
 }
@@ -50,7 +54,7 @@ func setChiURLParam(r *http.Request, key, value string) *http.Request {
 	return r.WithContext(context.WithValue(r.Context(), chi.RouteCtxKey, rctx))
 }
 
-func setupTestHandler(t *testing.T) (*DashboardHandler, *DashboardStorage, *mockInstallTrigger) {
+func setupTestHandler(t *testing.T) (*DashboardHandler, *DashboardStorage, *mockAppTrigger) {
 	t.Helper()
 
 	tmpDir := t.TempDir()
@@ -85,7 +89,7 @@ func setupTestHandler(t *testing.T) (*DashboardHandler, *DashboardStorage, *mock
 		},
 	}
 
-	trigger := newMockInstallTrigger()
+	trigger := newMockAppTrigger()
 
 	handler, err := NewDashboardHandler(storage, lister, trigger)
 	if err != nil {

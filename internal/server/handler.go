@@ -27,10 +27,12 @@ type ContainerLister interface {
 	ListAllContainers(ctx context.Context) ([]RawContainerInfo, error)
 }
 
-// InstallTrigger triggers app installation for containers.
-type InstallTrigger interface {
+// AppTrigger triggers app installation/uninstallation for containers.
+type AppTrigger interface {
 	// TriggerInstall triggers app installation for a container using stored config.
 	TriggerInstall(containerID string, storedConfig *docker.StoredConfig)
+	// TriggerUninstall triggers app uninstallation by app name.
+	TriggerUninstall(appName string)
 }
 
 // RawContainerInfo is the raw container info from Docker.
@@ -48,12 +50,12 @@ type RawContainerInfo struct {
 type DashboardHandler struct {
 	storage *DashboardStorage
 	lister  ContainerLister
-	trigger InstallTrigger
+	trigger AppTrigger
 	tmpl    *template.Template
 }
 
 // NewDashboardHandler creates a new dashboard handler.
-func NewDashboardHandler(storage *DashboardStorage, lister ContainerLister, trigger InstallTrigger) (*DashboardHandler, error) {
+func NewDashboardHandler(storage *DashboardStorage, lister ContainerLister, trigger AppTrigger) (*DashboardHandler, error) {
 	// Parse templates from embedded FS
 	funcMap := template.FuncMap{
 		"js":        template.JSEscapeString,
@@ -351,7 +353,10 @@ func (h *DashboardHandler) handleContainerSave(w http.ResponseWriter, r *http.Re
 
 	// Return success message
 	w.Header().Set("Content-Type", "text/html; charset=utf-8")
-	w.Write([]byte(`<article class="notification is-success">配置已保存！</article>`))
+	w.Write([]byte(`<article class="notification is-success">
+	<p>配置已保存！</p>
+	<button class="button is-small mt-2" hx-get="containers" hx-target="#main-content" hx-swap="innerHTML">返回列表</button>
+</article>`))
 }
 
 // handleContainerDelete deletes the stored configuration.
@@ -373,6 +378,13 @@ func (h *DashboardHandler) handleContainerDelete(w http.ResponseWriter, r *http.
 
 	key := container.Key
 
+	// Get config before deletion to find app name
+	config := h.storage.Get(key)
+	appName := ""
+	if config != nil {
+		appName = config.AppName
+	}
+
 	if err := h.storage.Delete(key); err != nil {
 		slog.Error("Failed to delete config", "key", key, "error", err)
 		h.renderError(w, http.StatusInternalServerError, "删除配置失败")
@@ -381,9 +393,17 @@ func (h *DashboardHandler) handleContainerDelete(w http.ResponseWriter, r *http.
 
 	slog.Info("Deleted container config", "key", key)
 
-	// Return empty response to clear the form
+	// Trigger uninstall if app was configured
+	if appName != "" && h.trigger != nil {
+		h.trigger.TriggerUninstall(appName)
+	}
+
+	// Return success message with button to go back
 	w.Header().Set("Content-Type", "text/html; charset=utf-8")
-	w.Write([]byte(`<article class="notification is-info">配置已删除，请从左侧列表选择容器。</article>`))
+	w.Write([]byte(`<article class="notification is-success">
+	<p>配置已删除！</p>
+	<button class="button is-small mt-2" hx-get="containers" hx-target="#main-content" hx-swap="innerHTML">返回列表</button>
+</article>`))
 }
 
 // handleIconUpload handles icon upload and resizing.

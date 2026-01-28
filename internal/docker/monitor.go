@@ -810,3 +810,30 @@ func (m *Monitor) ListAllContainers(ctx context.Context) ([]ContainerInfo, error
 	})
 	return result, nil
 }
+
+// TriggerUninstall uninstalls an app by name (called from dashboard when config is deleted).
+func (m *Monitor) TriggerUninstall(appName string) {
+	if appName == "" {
+		return
+	}
+
+	slog.Info("Triggering app uninstall from dashboard", "app", appName)
+
+	// Unregister from app registry
+	m.registry.Unregister(appName)
+
+	// Uninstall from fnOS
+	if m.installer != nil {
+		m.installer.Uninstall(appName)
+	}
+
+	// Clear installed state for any container with this app name
+	m.containers.Range(func(key, value any) bool {
+		state := value.(*ContainerState)
+		if state.AppName == appName {
+			state.AppName = ""
+			state.Installed = false
+		}
+		return true
+	})
+}
