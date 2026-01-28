@@ -18,7 +18,7 @@
         </div>
         <div class="level-right">
             <div class="level-item">
-                <span class="tag {{if eq .State "running"}}is-success{{else if eq .State "exited"}}is-warning{{else}}is-light{{end}}">
+                <span class="tag {{if eq .State "running"}}is-success{{else if eq .State "exited"}}is-warning{{end}}">
                     {{if eq .State "running"}}运行中{{else if eq .State "exited"}}已停止{{else}}{{.State}}{{end}}
                 </span>
             </div>

@@ -243,15 +243,13 @@ func (m *Monitor) processContainerStart(ctx context.Context, op *AppOperation) {
 
 	// Check if already installed in fnOS
 	if m.installer != nil && m.installer.IsAppInstalled(appName) {
-		// Already installed, register and start it
+		// Already installed, update state and start it
 		slog.Info("App already installed, starting", "app", appName)
-		m.containers.Store(op.ContainerID, &ContainerState{
-			ContainerID:   op.ContainerID,
-			ContainerName: op.ContainerName,
-			AppName:       appName,
-			Installed:     true,
-			Labels:        op.Labels,
-		})
+		if v, ok := m.containers.Load(op.ContainerID); ok {
+			state := v.(*ContainerState)
+			state.AppName = appName
+			state.Installed = true
+		}
 		// Register app in registry
 		if op.StoredConfig != nil {
 			m.registerAppFromStoredConfig(op.StoredConfig, op.ContainerID, op.ContainerName)
@@ -264,14 +262,12 @@ func (m *Monitor) processContainerStart(ctx context.Context, op *AppOperation) {
 		return
 	}
 
-	// Not installed, register as pending
-	m.containers.Store(op.ContainerID, &ContainerState{
-		ContainerID:   op.ContainerID,
-		ContainerName: op.ContainerName,
-		AppName:       appName,
-		Installed:     false,
-		Labels:        op.Labels,
-	})
+	// Not installed, update state as pending
+	if v, ok := m.containers.Load(op.ContainerID); ok {
+		state := v.(*ContainerState)
+		state.AppName = appName
+		state.Installed = false
+	}
 
 	// Generate app package
 	time.Sleep(2 * time.Second)
