@@ -91,6 +91,7 @@ type ContainerState struct {
 	State         string            // "running", "exited", etc.
 	Ports         map[string]string // containerPort -> hostPort
 	Labels        map[string]string
+	NetworkMode   string // e.g. "host", "bridge", "default"
 	// watchcow-specific state
 	AppName   string
 	Installed bool
@@ -550,6 +551,7 @@ func (m *Monitor) handleDockerEvent(ctx context.Context, event events.Message) {
 		state.State = "running"
 		state.Ports = ports
 		state.Labels = info.Config.Labels
+		state.NetworkMode = string(info.HostConfig.NetworkMode)
 		m.containers.Store(containerID, state)
 
 		// Check if should install: either has label config or has stored config
@@ -785,12 +787,13 @@ func (m *Monitor) registerAppFromLabels(appName, containerID, containerName stri
 
 // ContainerInfo represents container information for the dashboard.
 type ContainerInfo struct {
-	ID     string
-	Name   string
-	Image  string
-	State  string
-	Ports  map[string]string // containerPort -> hostPort
-	Labels map[string]string
+	ID          string
+	Name        string
+	Image       string
+	State       string
+	Ports       map[string]string // containerPort -> hostPort
+	Labels      map[string]string
+	NetworkMode string
 }
 
 // ListAllContainers returns all containers from the internal state map.
@@ -799,12 +802,13 @@ func (m *Monitor) ListAllContainers(ctx context.Context) ([]ContainerInfo, error
 	m.containers.Range(func(key, value any) bool {
 		state := value.(*ContainerState)
 		result = append(result, ContainerInfo{
-			ID:     state.ContainerID,
-			Name:   state.ContainerName,
-			Image:  state.Image,
-			State:  state.State,
-			Ports:  state.Ports,
-			Labels: state.Labels,
+			ID:          state.ContainerID,
+			Name:        state.ContainerName,
+			Image:       state.Image,
+			State:       state.State,
+			Ports:       state.Ports,
+			Labels:      state.Labels,
+			NetworkMode: state.NetworkMode,
 		})
 		return true
 	})

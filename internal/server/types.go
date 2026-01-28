@@ -81,6 +81,7 @@ type ContainerInfo struct {
 	State           string            // Container state (running, stopped, etc.)
 	Ports           map[string]string // containerPort -> hostPort
 	Labels          map[string]string // Container labels
+	NetworkMode     string            // Network mode (host, bridge, etc.)
 	Key             ContainerKey      // Computed container key
 	HasLabelConfig  bool              // watchcow.enable=true in labels
 	HasStoredConfig bool              // Has config in dashboard storage
@@ -96,4 +97,9 @@ func (c *ContainerInfo) IsConfigurable() bool {
 // IsEnabled returns true if the container is enabled for watchcow.
 func (c *ContainerInfo) IsEnabled() bool {
 	return c.HasLabelConfig || c.HasStoredConfig
+}
+
+// HasAccessiblePorts returns true if the container has host port mappings or uses host network mode.
+func (c *ContainerInfo) HasAccessiblePorts() bool {
+	return len(c.Ports) > 0 || c.NetworkMode == "host"
 }

@@ -1,17 +1,41 @@
 {{with .Container}}
+<nav class="breadcrumb mb-5" aria-label="breadcrumbs">
+    <ul>
+        <li><a hx-get="containers" hx-target="#main-content" hx-swap="innerHTML">容器列表</a></li>
+        <li class="is-active"><a href="#" aria-current="page">{{.Name}}</a></li>
+    </ul>
+</nav>
+
 <div class="box">
-    <h2 class="title is-4">{{.Name}}</h2>
-    <p class="subtitle is-6 has-text-grey">{{.Image}}</p>
+    <div class="level mb-4">
+        <div class="level-left">
+            <div class="level-item">
+                <div>
+                    <h2 class="title is-4 mb-1">{{.Name}}</h2>
+                    <p class="subtitle is-6 has-text-grey">{{.Image}}</p>
+                </div>
+            </div>
+        </div>
+        <div class="level-right">
+            <div class="level-item">
+                <span class="tag {{if eq .State "running"}}is-success{{else if eq .State "exited"}}is-warning{{else}}is-light{{end}}">
+                    {{if eq .State "running"}}运行中{{else if eq .State "exited"}}已停止{{else}}{{.State}}{{end}}
+                </span>
+            </div>
+        </div>
+    </div>
 
     {{if .HasLabelConfig}}
-    <article class="notification is-warning">
-        <strong>Label-configured container</strong><br>
-        This container is configured via Docker labels (watchcow.enable=true).
-        To modify settings, update the container labels and restart it.
+    <article class="message is-warning">
+        <div class="message-body">
+            <strong>标签配置容器</strong><br>
+            该容器已通过 Docker 标签（watchcow.enable=true）配置。
+            如需修改，请更新容器标签后重启容器。
+        </div>
     </article>
 
     <div class="content">
-        <h5>Current Labels:</h5>
+        <h5 class="title is-6">当前标签</h5>
         <table class="table is-narrow is-fullwidth">
             <tbody>
             {{range $key, $value := .Labels}}
@@ -25,38 +49,44 @@
             </tbody>
         </table>
     </div>
+
+    <div class="buttons">
+        <button class="button" hx-get="containers" hx-target="#main-content" hx-swap="innerHTML">
+            返回列表
+        </button>
+    </div>
     {{else}}
 
     <form hx-post="containers/{{.ID}}"
           hx-target="#form-message"
           hx-swap="innerHTML">
 
-        <div id="form-message"></div>
+        <div id="form-message" class="mb-4"></div>
 
-        <h5 class="title is-5 mt-5">App Settings</h5>
+        <h5 class="title is-5">应用设置</h5>
 
         <div class="field">
-            <label class="label">App Name</label>
+            <label class="label">应用名称</label>
             <div class="control">
                 <input class="input" type="text" name="appname"
                        value="{{$.Config.AppName}}"
                        placeholder="watchcow.{{.Name}}">
             </div>
-            <p class="help">Unique identifier for fnOS (e.g., watchcow.myapp)</p>
+            <p class="help">fnOS 中的唯一标识（如 watchcow.myapp）</p>
         </div>
 
         <div class="field">
-            <label class="label">Display Name</label>
+            <label class="label">显示名称</label>
             <div class="control">
                 <input class="input" type="text" name="display_name"
                        value="{{$.Config.DisplayName}}"
                        placeholder="{{.Name}}">
             </div>
-            <p class="help">Human-readable name shown in fnOS</p>
+            <p class="help">在 fnOS 中显示的名称</p>
         </div>
 
         <div class="field">
-            <label class="label">Description</label>
+            <label class="label">描述</label>
             <div class="control">
                 <textarea class="textarea" name="description"
                           placeholder="{{.Image}}">{{$.Config.Description}}</textarea>
@@ -66,7 +96,7 @@
         <div class="columns">
             <div class="column">
                 <div class="field">
-                    <label class="label">Version</label>
+                    <label class="label">版本</label>
                     <div class="control">
                         <input class="input" type="text" name="version"
                                value="{{$.Config.Version}}"
@@ -76,7 +106,7 @@
             </div>
             <div class="column">
                 <div class="field">
-                    <label class="label">Maintainer</label>
+                    <label class="label">维护者</label>
                     <div class="control">
                         <input class="input" type="text" name="maintainer"
                                value="{{$.Config.Maintainer}}"
@@ -86,24 +116,26 @@
             </div>
         </div>
 
-        <h5 class="title is-5 mt-5">Entry Point</h5>
+        <hr>
+
+        <h5 class="title is-5">入口配置</h5>
 
         {{$entry := index $.Config.Entries 0}}
 
         <div class="field">
-            <label class="label">Title</label>
+            <label class="label">标题</label>
             <div class="control">
                 <input class="input" type="text" name="entry_title"
                        value="{{$entry.Title}}"
                        placeholder="{{$.Config.DisplayName}}">
             </div>
-            <p class="help">Entry point title (defaults to display name)</p>
+            <p class="help">入口标题（默认使用显示名称）</p>
         </div>
 
         <div class="columns">
-            <div class="column is-one-quarter">
+            <div class="column is-3">
                 <div class="field">
-                    <label class="label">Protocol</label>
+                    <label class="label">协议</label>
                     <div class="control">
                         <div class="select is-fullwidth">
                             <select name="entry_protocol">
@@ -114,26 +146,33 @@
                     </div>
                 </div>
             </div>
-            <div class="column is-one-quarter">
+            <div class="column is-3">
                 <div class="field">
-                    <label class="label">Port</label>
+                    <label class="label">端口</label>
                     <div class="control">
+                        {{if .Ports}}
                         <div class="select is-fullwidth">
                             <select name="entry_port">
                                 {{range $cport, $hport := .Ports}}
                                 <option value="{{$cport}}" {{if eq $entry.Port $cport}}selected{{end}}>{{$cport}} (→{{$hport}})</option>
                                 {{end}}
-                                {{if not .Ports}}
-                                <option value="">No ports exposed</option>
-                                {{end}}
                             </select>
                         </div>
+                        {{else}}
+                        <input class="input" type="number" name="entry_port"
+                               value="{{$entry.Port}}"
+                               placeholder="8080"
+                               min="1" max="65535">
+                        {{end}}
                     </div>
+                    {{if eq .NetworkMode "host"}}
+                    <p class="help">host 网络模式，请输入容器监听的端口</p>
+                    {{end}}
                 </div>
             </div>
             <div class="column">
                 <div class="field">
-                    <label class="label">Path</label>
+                    <label class="label">路径</label>
                     <div class="control">
                         <input class="input" type="text" name="entry_path"
                                value="{{$entry.Path}}"
@@ -146,12 +185,12 @@
         <div class="columns">
             <div class="column">
                 <div class="field">
-                    <label class="label">UI Type</label>
+                    <label class="label">打开方式</label>
                     <div class="control">
                         <div class="select is-fullwidth">
                             <select name="entry_ui_type">
-                                <option value="url" {{if eq $entry.UIType "url"}}selected{{end}}>New Tab (url)</option>
-                                <option value="iframe" {{if eq $entry.UIType "iframe"}}selected{{end}}>Desktop Window (iframe)</option>
+                                <option value="url" {{if eq $entry.UIType "url"}}selected{{end}}>新标签页 (url)</option>
+                                <option value="iframe" {{if eq $entry.UIType "iframe"}}selected{{end}}>桌面窗口 (iframe)</option>
                             </select>
                         </div>
                     </div>
@@ -159,42 +198,44 @@
             </div>
             <div class="column">
                 <div class="field">
-                    <label class="label">File Types</label>
+                    <label class="label">关联文件类型</label>
                     <div class="control">
                         <input class="input" type="text" name="entry_file_types"
                                value="{{range $i, $ft := $entry.FileTypes}}{{if $i}},{{end}}{{$ft}}{{end}}"
                                placeholder="pdf,doc,txt">
                     </div>
-                    <p class="help">Comma-separated file types for right-click menu</p>
+                    <p class="help">逗号分隔的文件类型，用于右键菜单</p>
                 </div>
             </div>
         </div>
 
         <div class="field">
-            <label class="label">External Redirect</label>
+            <label class="label">外部跳转地址</label>
             <div class="control">
                 <input class="input" type="text" name="entry_redirect"
                        value="{{$entry.Redirect}}"
                        placeholder="https://example.com">
             </div>
-            <p class="help">External URL for remote access (via CGI redirect)</p>
+            <p class="help">远程访问时的外部跳转 URL（通过 CGI 重定向）</p>
         </div>
 
         <div class="field">
             <label class="checkbox">
                 <input type="checkbox" name="entry_all_users" value="true" {{if $entry.AllUsers}}checked{{end}}>
-                Allow all users to access
+                允许所有用户访问
             </label>
         </div>
 
         <div class="field">
             <label class="checkbox">
                 <input type="checkbox" name="entry_no_display" value="true" {{if $entry.NoDisplay}}checked{{end}}>
-                Hide from desktop (only show in right-click menu)
+                从桌面隐藏（仅在右键菜单中显示）
             </label>
         </div>
 
-        <h5 class="title is-5 mt-5">Icon</h5>
+        <hr>
+
+        <h5 class="title is-5">图标</h5>
 
         <div class="field">
             <div class="file has-name">
@@ -204,37 +245,39 @@
                            hx-target="#icon-preview"
                            hx-encoding="multipart/form-data">
                     <span class="file-cta">
-                        <span class="file-label">Choose icon...</span>
+                        <span class="file-label">选择图标...</span>
                     </span>
                 </label>
             </div>
-            <div id="icon-preview" class="mt-2">
+            <div id="icon-preview" class="mt-3">
                 {{if $.Config.IconBase64}}
-                <img src="data:image/png;base64,{{$.Config.IconBase64}}" alt="Icon" style="max-width: 64px; max-height: 64px;">
+                <figure class="image is-64x64">
+                    <img src="data:image/png;base64,{{$.Config.IconBase64}}" alt="Icon">
+                </figure>
                 {{end}}
             </div>
-            <p class="help">Upload an icon (will be resized to 256x256)</p>
+            <p class="help">上传图标（将自动缩放至 256x256）</p>
         </div>
 
         <hr>
 
-        <div class="field is-grouped">
-            <div class="control">
-                <button class="button is-primary" type="submit">
-                    <span class="icon"><svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 24 24" width="16" height="16" fill="currentColor"><path d="M17 3H5c-1.11 0-2 .9-2 2v14c0 1.1.89 2 2 2h14c1.1 0 2-.9 2-2V7l-4-4zm-5 16c-1.66 0-3-1.34-3-3s1.34-3 3-3 3 1.34 3 3-1.34 3-3 3zm3-10H5V5h10v4z"/></svg></span>
-                    <span>Save Configuration</span>
-                </button>
-            </div>
-            <div class="control">
-                <button class="button is-danger is-outlined" type="button"
-                        hx-delete="containers/{{.ID}}"
-                        hx-target="#container-form"
-                        hx-swap="innerHTML"
-                        hx-confirm="Are you sure you want to delete this configuration?">
-                    <span class="icon"><svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 24 24" width="16" height="16" fill="currentColor"><path d="M6 19c0 1.1.9 2 2 2h8c1.1 0 2-.9 2-2V7H6v12zM19 4h-3.5l-1-1h-5l-1 1H5v2h14V4z"/></svg></span>
-                    <span>Delete</span>
-                </button>
-            </div>
+        <div class="buttons">
+            <button class="button is-primary" type="submit">
+                保存配置
+            </button>
+            <button class="button is-danger is-outlined" type="button"
+                    hx-delete="containers/{{.ID}}"
+                    hx-target="#main-content"
+                    hx-swap="innerHTML"
+                    hx-confirm="确定要删除此配置吗？">
+                删除配置
+            </button>
+            <button class="button" type="button"
+                    hx-get="containers"
+                    hx-target="#main-content"
+                    hx-swap="innerHTML">
+                返回列表
+            </button>
         </div>
     </form>
     {{end}}

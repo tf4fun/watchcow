@@ -35,12 +35,13 @@ type InstallTrigger interface {
 
 // RawContainerInfo is the raw container info from Docker.
 type RawContainerInfo struct {
-	ID     string
-	Name   string
-	Image  string
-	State  string
-	Ports  map[string]string
-	Labels map[string]string
+	ID          string
+	Name        string
+	Image       string
+	State       string
+	Ports       map[string]string
+	Labels      map[string]string
+	NetworkMode string
 }
 
 // DashboardHandler provides HTTP handlers for the dashboard.
@@ -120,6 +121,7 @@ func (h *DashboardHandler) listContainers(ctx context.Context) ([]ContainerInfo,
 			State:           r.State,
 			Ports:           r.Ports,
 			Labels:          r.Labels,
+			NetworkMode:     r.NetworkMode,
 			Key:             key,
 			HasLabelConfig:  hasLabelConfig,
 			HasStoredConfig: hasStoredConfig,
@@ -170,41 +172,29 @@ func (h *DashboardHandler) getContainerByID(ctx context.Context, id string) (*Co
 
 // dashboardData holds data for the main dashboard template.
 type dashboardData struct {
-	BulmaCSS   template.CSS
-	HtmxJS     template.JS
-	Containers []ContainerInfo
+	BulmaCSS template.CSS
+	HtmxJS   template.JS
 }
 
 // handleDashboard renders the main dashboard page.
 func (h *DashboardHandler) handleDashboard(w http.ResponseWriter, r *http.Request) {
-	ctx := r.Context()
-
 	// Load CSS
 	cssBytes, err := web.Assets.ReadFile("css/bulma.min.css")
 	if err != nil {
-		h.renderError(w, http.StatusInternalServerError, "Failed to load CSS")
+		h.renderError(w, http.StatusInternalServerError, "加载 CSS 失败")
 		return
 	}
 
 	// Load HTMX JS
 	htmxBytes, err := web.Assets.ReadFile("js/htmx.min.js")
 	if err != nil {
-		h.renderError(w, http.StatusInternalServerError, "Failed to load HTMX")
-		return
-	}
-
-	// Get containers
-	containers, err := h.listContainers(ctx)
-	if err != nil {
-		slog.Error("Failed to list containers", "error", err)
-		h.renderError(w, http.StatusInternalServerError, "Failed to list containers")
+		h.renderError(w, http.StatusInternalServerError, "加载 HTMX 失败")
 		return
 	}
 
 	data := dashboardData{
-		BulmaCSS:   template.CSS(cssBytes),
-		HtmxJS:     template.JS(htmxBytes),
-		Containers: containers,
+		BulmaCSS: template.CSS(cssBytes),
+		HtmxJS:   template.JS(htmxBytes),
 	}
 
 	w.Header().Set("Content-Type", "text/html; charset=utf-8")
@@ -216,7 +206,6 @@ func (h *DashboardHandler) handleDashboard(w http.ResponseWriter, r *http.Reques
 // containerListData holds data for the container list partial.
 type containerListData struct {
 	Containers []ContainerInfo
-	Selected   string // Container ID
 }
 
 // handleContainerList renders the container list partial (HTMX).
@@ -225,16 +214,13 @@ func (h *DashboardHandler) handleContainerList(w http.ResponseWriter, r *http.Re
 
 	containers, err := h.listContainers(ctx)
 	if err != nil {
-		slog.Error("Failed to list containers", "error", err)
-		h.renderError(w, http.StatusInternalServerError, "Failed to list containers")
+		slog.Error("获取容器列表失败", "error", err)
+		h.renderError(w, http.StatusInternalServerError, "获取容器列表失败")
 		return
 	}
 
-	selected := r.URL.Query().Get("selected")
-
 	data := containerListData{
 		Containers: containers,
-		Selected:   selected,
 	}
 
 	w.Header().Set("Content-Type", "text/html; charset=utf-8")
@@ -255,13 +241,13 @@ func (h *DashboardHandler) handleContainerForm(w http.ResponseWriter, r *http.Re
 
 	containerID := chi.URLParam(r, "id")
 	if containerID == "" {
-		h.renderError(w, http.StatusBadRequest, "Invalid container ID")
+		h.renderError(w, http.StatusBadRequest, "无效的容器 ID")
 		return
 	}
 
 	container, err := h.getContainerByID(ctx, containerID)
 	if err != nil {
-		h.renderError(w, http.StatusNotFound, "Container not found")
+		h.renderError(w, http.StatusNotFound, "未找到容器")
 		return
 	}
 
@@ -289,25 +275,25 @@ func (h *DashboardHandler) handleContainerSave(w http.ResponseWriter, r *http.Re
 
 	containerID := chi.URLParam(r, "id")
 	if containerID == "" {
-		h.renderError(w, http.StatusBadRequest, "Invalid container ID")
+		h.renderError(w, http.StatusBadRequest, "无效的容器 ID")
 		return
 	}
 
 	// Get container to verify it exists and isn't label-configured
 	container, err := h.getContainerByID(ctx, containerID)
 	if err != nil {
-		h.renderError(w, http.StatusNotFound, "Container not found")
+		h.renderError(w, http.StatusNotFound, "未找到容器")
 		return
 	}
 
 	if container.HasLabelConfig {
-		h.renderError(w, http.StatusForbidden, "Label-configured containers cannot be modified")
+		h.renderError(w, http.StatusForbidden, "标签配置的容器无法修改")
 		return
 	}
 
 	// Parse form
 	if err := r.ParseForm(); err != nil {
-		h.renderError(w, http.StatusBadRequest, "Failed to parse form")
+		h.renderError(w, http.StatusBadRequest, "解析表单失败")
 		return
 	}
 
@@ -350,7 +336,7 @@ func (h *DashboardHandler) handleContainerSave(w http.ResponseWriter, r *http.Re
 	// Save
 	if err := h.storage.Set(config); err != nil {
 		slog.Error("Failed to save config", "key", key, "error", err)
-		h.renderError(w, http.StatusInternalServerError, "Failed to save configuration")
+		h.renderError(w, http.StatusInternalServerError, "保存配置失败")
 		return
 	}
 
@@ -365,7 +351,7 @@ func (h *DashboardHandler) handleContainerSave(w http.ResponseWriter, r *http.Re
 
 	// Return success message
 	w.Header().Set("Content-Type", "text/html; charset=utf-8")
-	w.Write([]byte(`<article class="notification is-success">Configuration saved successfully!</article>`))
+	w.Write([]byte(`<article class="notification is-success">配置已保存！</article>`))
 }
 
 // handleContainerDelete deletes the stored configuration.
@@ -374,14 +360,14 @@ func (h *DashboardHandler) handleContainerDelete(w http.ResponseWriter, r *http.
 
 	containerID := chi.URLParam(r, "id")
 	if containerID == "" {
-		h.renderError(w, http.StatusBadRequest, "Invalid container ID")
+		h.renderError(w, http.StatusBadRequest, "无效的容器 ID")
 		return
 	}
 
 	// Get container to find its key
 	container, err := h.getContainerByID(ctx, containerID)
 	if err != nil {
-		h.renderError(w, http.StatusNotFound, "Container not found")
+		h.renderError(w, http.StatusNotFound, "未找到容器")
 		return
 	}
 
@@ -389,7 +375,7 @@ func (h *DashboardHandler) handleContainerDelete(w http.ResponseWriter, r *http.
 
 	if err := h.storage.Delete(key); err != nil {
 		slog.Error("Failed to delete config", "key", key, "error", err)
-		h.renderError(w, http.StatusInternalServerError, "Failed to delete configuration")
+		h.renderError(w, http.StatusInternalServerError, "删除配置失败")
 		return
 	}
 
@@ -397,7 +383,7 @@ func (h *DashboardHandler) handleContainerDelete(w http.ResponseWriter, r *http.
 
 	// Return empty response to clear the form
 	w.Header().Set("Content-Type", "text/html; charset=utf-8")
-	w.Write([]byte(`<article class="notification is-info">Configuration deleted. Select a container from the list.</article>`))
+	w.Write([]byte(`<article class="notification is-info">配置已删除，请从左侧列表选择容器。</article>`))
 }
 
 // handleIconUpload handles icon upload and resizing.
@@ -406,14 +392,14 @@ func (h *DashboardHandler) handleIconUpload(w http.ResponseWriter, r *http.Reque
 
 	containerID := chi.URLParam(r, "id")
 	if containerID == "" {
-		h.renderError(w, http.StatusBadRequest, "Invalid container ID")
+		h.renderError(w, http.StatusBadRequest, "无效的容器 ID")
 		return
 	}
 
 	// Get container to find its key
 	container, err := h.getContainerByID(ctx, containerID)
 	if err != nil {
-		h.renderError(w, http.StatusNotFound, "Container not found")
+		h.renderError(w, http.StatusNotFound, "未找到容器")
 		return
 	}
 
@@ -421,13 +407,13 @@ func (h *DashboardHandler) handleIconUpload(w http.ResponseWriter, r *http.Reque
 
 	// Parse multipart form (max 10MB)
 	if err := r.ParseMultipartForm(10 << 20); err != nil {
-		h.renderError(w, http.StatusBadRequest, "Failed to parse upload")
+		h.renderError(w, http.StatusBadRequest, "解析上传失败")
 		return
 	}
 
 	file, _, err := r.FormFile("icon")
 	if err != nil {
-		h.renderError(w, http.StatusBadRequest, "No file uploaded")
+		h.renderError(w, http.StatusBadRequest, "未上传文件")
 		return
 	}
 	defer file.Close()
@@ -435,13 +421,13 @@ func (h *DashboardHandler) handleIconUpload(w http.ResponseWriter, r *http.Reque
 	// Read and decode image
 	imgData, err := io.ReadAll(file)
 	if err != nil {
-		h.renderError(w, http.StatusBadRequest, "Failed to read file")
+		h.renderError(w, http.StatusBadRequest, "读取文件失败")
 		return
 	}
 
 	img, _, err := image.Decode(bytes.NewReader(imgData))
 	if err != nil {
-		h.renderError(w, http.StatusBadRequest, "Invalid image format")
+		h.renderError(w, http.StatusBadRequest, "无效的图片格式")
 		return
 	}
 
@@ -451,7 +437,7 @@ func (h *DashboardHandler) handleIconUpload(w http.ResponseWriter, r *http.Reque
 	// Encode as PNG
 	var buf bytes.Buffer
 	if err := png.Encode(&buf, resized); err != nil {
-		h.renderError(w, http.StatusInternalServerError, "Failed to encode image")
+		h.renderError(w, http.StatusInternalServerError, "编码图片失败")
 		return
 	}
 
@@ -461,7 +447,7 @@ func (h *DashboardHandler) handleIconUpload(w http.ResponseWriter, r *http.Reque
 	// Update config
 	config := h.storage.Get(key)
 	if config == nil {
-		h.renderError(w, http.StatusNotFound, "Configuration not found, save configuration first")
+		h.renderError(w, http.StatusNotFound, "未找到配置，请先保存配置")
 		return
 	}
 
@@ -469,7 +455,7 @@ func (h *DashboardHandler) handleIconUpload(w http.ResponseWriter, r *http.Reque
 	config.UpdatedAt = time.Now()
 
 	if err := h.storage.Set(config); err != nil {
-		h.renderError(w, http.StatusInternalServerError, "Failed to save icon")
+		h.renderError(w, http.StatusInternalServerError, "保存图标失败")
 		return
 	}
 

@@ -40,12 +40,13 @@ func (a *monitorAdapter) ListAllContainers(ctx context.Context) ([]server.RawCon
 	result := make([]server.RawContainerInfo, len(containers))
 	for i, c := range containers {
 		result[i] = server.RawContainerInfo{
-			ID:     c.ID,
-			Name:   c.Name,
-			Image:  c.Image,
-			State:  c.State,
-			Ports:  c.Ports,
-			Labels: c.Labels,
+			ID:          c.ID,
+			Name:        c.Name,
+			Image:       c.Image,
+			State:       c.State,
+			Ports:       c.Ports,
+			Labels:      c.Labels,
+			NetworkMode: c.NetworkMode,
 		}
 	}
 	return result, nil

@@ -67,7 +67,7 @@ func newUnixSocketProxy(socketPath string) *httputil.ReverseProxy {
 const serviceUnavailableHTML = `<!DOCTYPE html>
 <html>
 <head>
-    <title>Service Unavailable</title>
+    <title>服务不可用</title>
     <style>
         body {
             font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', Roboto, sans-serif;
@@ -91,9 +91,9 @@ const serviceUnavailableHTML = `<!DOCTYPE html>
 </head>
 <body>
     <div class="container">
-        <h1>Service Unavailable</h1>
-        <p>WatchCow service is not running.</p>
-        <p>Please ensure the WatchCow daemon is started.</p>
+        <h1>服务不可用</h1>
+        <p>WatchCow 服务未运行。</p>
+        <p>请确认 WatchCow 守护进程已启动。</p>
     </div>
 </body>
 </html>`

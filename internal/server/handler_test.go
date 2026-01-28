@@ -109,15 +109,18 @@ func TestDashboardHandler_Dashboard(t *testing.T) {
 	}
 
 	body := w.Body.String()
-	if !strings.Contains(body, "WatchCow Dashboard") {
+	if !strings.Contains(body, "WatchCow 控制面板") {
 		t.Error("response should contain dashboard title")
 	}
 	if !strings.Contains(body, "WatchCow") {
 		t.Error("response should contain WatchCow branding")
 	}
-	// Container list is loaded via HTMX, so we check for the HTMX attributes
-	if !strings.Contains(body, "hx-get=\"containers\"") {
+	// Container list is loaded via HTMX into #main-content
+	if !strings.Contains(body, `hx-get="containers"`) {
 		t.Error("response should contain HTMX container list loader")
+	}
+	if !strings.Contains(body, `id="main-content"`) {
+		t.Error("response should contain main-content div")
 	}
 }
 
