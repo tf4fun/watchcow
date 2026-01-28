@@ -154,7 +154,7 @@
                         <div class="select is-fullwidth">
                             <select name="entry_port">
                                 {{range $cport, $hport := .Ports}}
-                                <option value="{{$cport}}" {{if eq $entry.Port $cport}}selected{{end}}>{{$cport}} (→{{$hport}})</option>
+                                <option value="{{$hport}}" {{if eq $entry.Port $hport}}selected{{end}}>{{$hport}}</option>
                                 {{end}}
                             </select>
                         </div>

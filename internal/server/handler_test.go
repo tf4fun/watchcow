@@ -180,7 +180,7 @@ func TestDashboardHandler_ContainerSave(t *testing.T) {
 		"maintainer":     {"Tester"},
 		"entry_title":    {"Nginx"},
 		"entry_protocol": {"http"},
-		"entry_port":     {"80"},
+		"entry_port":     {"8080"},
 		"entry_path":     {"/"},
 		"entry_ui_type":  {"url"},
 	}
@@ -378,7 +378,7 @@ func TestDashboardHandler_SaveTriggersInstall(t *testing.T) {
 		"appname":        {"watchcow.nginx"},
 		"display_name":   {"Nginx"},
 		"entry_protocol": {"http"},
-		"entry_port":     {"80"},
+		"entry_port":     {"8080"},
 		"entry_path":     {"/"},
 	}
 

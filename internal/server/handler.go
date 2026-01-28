@@ -529,9 +529,9 @@ func (h *DashboardHandler) createDefaultConfig(container *ContainerInfo) *Stored
 		AllUsers: true,
 	}
 
-	// Find first port
-	for containerPort := range container.Ports {
-		entry.Port = containerPort
+	// Find first host port
+	for _, hostPort := range container.Ports {
+		entry.Port = hostPort
 		break
 	}
 
