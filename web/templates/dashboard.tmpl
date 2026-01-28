@@ -87,7 +87,7 @@
             if (evt.detail.path === 'containers') {
                 var selected = document.querySelector('.container-item.is-selected');
                 if (selected) {
-                    evt.detail.parameters['selected'] = selected.dataset.key;
+                    evt.detail.parameters['selected'] = selected.dataset.id;
                 }
             }
         });

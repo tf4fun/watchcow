@@ -11,7 +11,6 @@ import (
 	"io"
 	"log/slog"
 	"net/http"
-	"net/url"
 	"sort"
 	"strings"
 	"time"
@@ -32,8 +31,6 @@ type ContainerLister interface {
 type InstallTrigger interface {
 	// TriggerInstall triggers app installation for a container using stored config.
 	TriggerInstall(containerID string, storedConfig *docker.StoredConfig)
-	// GetContainerByKey finds a container by its key (image|ports).
-	GetContainerByKey(key string) (containerID string, found bool)
 }
 
 // RawContainerInfo is the raw container info from Docker.
@@ -59,7 +56,6 @@ func NewDashboardHandler(storage *DashboardStorage, lister ContainerLister, trig
 	// Parse templates from embedded FS
 	funcMap := template.FuncMap{
 		"js":        template.JSEscapeString,
-		"urlsafe":   url.PathEscape,
 		"hasPrefix": strings.HasPrefix,
 	}
 
@@ -97,10 +93,11 @@ func NewDashboardHandler(storage *DashboardStorage, lister ContainerLister, trig
 func (h *DashboardHandler) Mount(r chi.Router) {
 	r.Get("/", h.handleDashboard)
 	r.Get("/containers", h.handleContainerList)
-	r.Get("/containers/{key}", h.handleContainerForm)
-	r.Post("/containers/{key}", h.handleContainerSave)
-	r.Delete("/containers/{key}", h.handleContainerDelete)
-	r.Post("/containers/{key}/icon", h.handleIconUpload)
+	// Use container ID in URL path (safe characters, no encoding issues)
+	r.Get("/containers/{id}", h.handleContainerForm)
+	r.Post("/containers/{id}", h.handleContainerSave)
+	r.Delete("/containers/{id}", h.handleContainerDelete)
+	r.Post("/containers/{id}/icon", h.handleIconUpload)
 }
 
 // listContainers fetches containers and enriches with storage info.
@@ -155,6 +152,22 @@ func (h *DashboardHandler) getContainer(ctx context.Context, key ContainerKey) (
 	return nil, fmt.Errorf("container not found: %s", key)
 }
 
+// getContainerByID fetches a single container by its ID.
+func (h *DashboardHandler) getContainerByID(ctx context.Context, id string) (*ContainerInfo, error) {
+	containers, err := h.listContainers(ctx)
+	if err != nil {
+		return nil, err
+	}
+
+	for i := range containers {
+		if containers[i].ID == id {
+			return &containers[i], nil
+		}
+	}
+
+	return nil, fmt.Errorf("container not found: %s", id)
+}
+
 // dashboardData holds data for the main dashboard template.
 type dashboardData struct {
 	BulmaCSS   template.CSS
@@ -203,7 +216,7 @@ func (h *DashboardHandler) handleDashboard(w http.ResponseWriter, r *http.Reques
 // containerListData holds data for the container list partial.
 type containerListData struct {
 	Containers []ContainerInfo
-	Selected   ContainerKey
+	Selected   string // Container ID
 }
 
 // handleContainerList renders the container list partial (HTMX).
@@ -217,7 +230,7 @@ func (h *DashboardHandler) handleContainerList(w http.ResponseWriter, r *http.Re
 		return
 	}
 
-	selected := ContainerKey(r.URL.Query().Get("selected"))
+	selected := r.URL.Query().Get("selected")
 
 	data := containerListData{
 		Containers: containers,
@@ -240,21 +253,20 @@ type containerFormData struct {
 func (h *DashboardHandler) handleContainerForm(w http.ResponseWriter, r *http.Request) {
 	ctx := r.Context()
 
-	keyStr, err := url.PathUnescape(chi.URLParam(r, "key"))
-	if err != nil {
-		h.renderError(w, http.StatusBadRequest, "Invalid container key")
+	containerID := chi.URLParam(r, "id")
+	if containerID == "" {
+		h.renderError(w, http.StatusBadRequest, "Invalid container ID")
 		return
 	}
-	key := ContainerKey(keyStr)
 
-	container, err := h.getContainer(ctx, key)
+	container, err := h.getContainerByID(ctx, containerID)
 	if err != nil {
 		h.renderError(w, http.StatusNotFound, "Container not found")
 		return
 	}
 
 	// Get stored config or create default
-	config := h.storage.Get(key)
+	config := h.storage.Get(container.Key)
 	if config == nil {
 		// Create default config from container info
 		config = h.createDefaultConfig(container)
@@ -275,15 +287,14 @@ func (h *DashboardHandler) handleContainerForm(w http.ResponseWriter, r *http.Re
 func (h *DashboardHandler) handleContainerSave(w http.ResponseWriter, r *http.Request) {
 	ctx := r.Context()
 
-	keyStr, err := url.PathUnescape(chi.URLParam(r, "key"))
-	if err != nil {
-		h.renderError(w, http.StatusBadRequest, "Invalid container key")
+	containerID := chi.URLParam(r, "id")
+	if containerID == "" {
+		h.renderError(w, http.StatusBadRequest, "Invalid container ID")
 		return
 	}
-	key := ContainerKey(keyStr)
 
 	// Get container to verify it exists and isn't label-configured
-	container, err := h.getContainer(ctx, key)
+	container, err := h.getContainerByID(ctx, containerID)
 	if err != nil {
 		h.renderError(w, http.StatusNotFound, "Container not found")
 		return
@@ -299,6 +310,8 @@ func (h *DashboardHandler) handleContainerSave(w http.ResponseWriter, r *http.Re
 		h.renderError(w, http.StatusBadRequest, "Failed to parse form")
 		return
 	}
+
+	key := container.Key
 
 	// Get existing config or create new
 	config := h.storage.Get(key)
@@ -345,11 +358,9 @@ func (h *DashboardHandler) handleContainerSave(w http.ResponseWriter, r *http.Re
 
 	// Trigger installation if container is running
 	if h.trigger != nil {
-		if containerID, found := h.trigger.GetContainerByKey(string(key)); found {
-			// Convert to docker.StoredConfig for trigger
-			dockerConfig := h.convertToDockerConfig(config)
-			h.trigger.TriggerInstall(containerID, dockerConfig)
-		}
+		// Convert to docker.StoredConfig for trigger
+		dockerConfig := h.convertToDockerConfig(config)
+		h.trigger.TriggerInstall(containerID, dockerConfig)
 	}
 
 	// Return success message
@@ -359,12 +370,22 @@ func (h *DashboardHandler) handleContainerSave(w http.ResponseWriter, r *http.Re
 
 // handleContainerDelete deletes the stored configuration.
 func (h *DashboardHandler) handleContainerDelete(w http.ResponseWriter, r *http.Request) {
-	keyStr, err := url.PathUnescape(chi.URLParam(r, "key"))
-	if err != nil {
-		h.renderError(w, http.StatusBadRequest, "Invalid container key")
+	ctx := r.Context()
+
+	containerID := chi.URLParam(r, "id")
+	if containerID == "" {
+		h.renderError(w, http.StatusBadRequest, "Invalid container ID")
 		return
 	}
-	key := ContainerKey(keyStr)
+
+	// Get container to find its key
+	container, err := h.getContainerByID(ctx, containerID)
+	if err != nil {
+		h.renderError(w, http.StatusNotFound, "Container not found")
+		return
+	}
+
+	key := container.Key
 
 	if err := h.storage.Delete(key); err != nil {
 		slog.Error("Failed to delete config", "key", key, "error", err)
@@ -381,12 +402,22 @@ func (h *DashboardHandler) handleContainerDelete(w http.ResponseWriter, r *http.
 
 // handleIconUpload handles icon upload and resizing.
 func (h *DashboardHandler) handleIconUpload(w http.ResponseWriter, r *http.Request) {
-	keyStr, err := url.PathUnescape(chi.URLParam(r, "key"))
-	if err != nil {
-		h.renderError(w, http.StatusBadRequest, "Invalid container key")
+	ctx := r.Context()
+
+	containerID := chi.URLParam(r, "id")
+	if containerID == "" {
+		h.renderError(w, http.StatusBadRequest, "Invalid container ID")
 		return
 	}
-	key := ContainerKey(keyStr)
+
+	// Get container to find its key
+	container, err := h.getContainerByID(ctx, containerID)
+	if err != nil {
+		h.renderError(w, http.StatusNotFound, "Container not found")
+		return
+	}
+
+	key := container.Key
 
 	// Parse multipart form (max 10MB)
 	if err := r.ParseMultipartForm(10 << 20); err != nil {

@@ -25,8 +25,7 @@ func (m *mockContainerLister) ListAllContainers(ctx context.Context) ([]RawConta
 
 // mockInstallTrigger implements InstallTrigger for testing
 type mockInstallTrigger struct {
-	triggerCalls   []triggerCall
-	containersByKey map[string]string
+	triggerCalls []triggerCall
 }
 
 type triggerCall struct {
@@ -38,18 +37,9 @@ func (m *mockInstallTrigger) TriggerInstall(containerID string, storedConfig *do
 	m.triggerCalls = append(m.triggerCalls, triggerCall{containerID, storedConfig})
 }
 
-func (m *mockInstallTrigger) GetContainerByKey(key string) (containerID string, found bool) {
-	if m.containersByKey == nil {
-		return "", false
-	}
-	id, ok := m.containersByKey[key]
-	return id, ok
-}
-
 func newMockInstallTrigger() *mockInstallTrigger {
 	return &mockInstallTrigger{
-		triggerCalls:    make([]triggerCall, 0),
-		containersByKey: make(map[string]string),
+		triggerCalls: make([]triggerCall, 0),
 	}
 }
 
@@ -96,8 +86,6 @@ func setupTestHandler(t *testing.T) (*DashboardHandler, *DashboardStorage, *mock
 	}
 
 	trigger := newMockInstallTrigger()
-	trigger.containersByKey["nginx:alpine|80:8080"] = "abc123"
-	trigger.containersByKey["redis:latest|6379:6379"] = "def456"
 
 	handler, err := NewDashboardHandler(storage, lister, trigger)
 	if err != nil {
@@ -158,9 +146,9 @@ func TestDashboardHandler_ContainerList(t *testing.T) {
 func TestDashboardHandler_ContainerForm(t *testing.T) {
 	handler, _, _ := setupTestHandler(t)
 
-	key := "nginx:alpine|80:8080"
-	req := httptest.NewRequest("GET", "/containers/"+url.PathEscape(key), nil)
-	req = setChiURLParam(req, "key", key)
+	containerID := "abc123"
+	req := httptest.NewRequest("GET", "/containers/"+containerID, nil)
+	req = setChiURLParam(req, "id", containerID)
 	w := httptest.NewRecorder()
 
 	handler.handleContainerForm(w, req)
@@ -179,6 +167,7 @@ func TestDashboardHandler_ContainerForm(t *testing.T) {
 func TestDashboardHandler_ContainerSave(t *testing.T) {
 	handler, storage, trigger := setupTestHandler(t)
 
+	containerID := "abc123"
 	key := "nginx:alpine|80:8080"
 	form := url.Values{
 		"appname":        {"watchcow.nginx"},
@@ -193,9 +182,9 @@ func TestDashboardHandler_ContainerSave(t *testing.T) {
 		"entry_ui_type":  {"url"},
 	}
 
-	req := httptest.NewRequest("POST", "/containers/"+url.PathEscape(key), strings.NewReader(form.Encode()))
+	req := httptest.NewRequest("POST", "/containers/"+containerID, strings.NewReader(form.Encode()))
 	req.Header.Set("Content-Type", "application/x-www-form-urlencoded")
-	req = setChiURLParam(req, "key", key)
+	req = setChiURLParam(req, "id", containerID)
 	w := httptest.NewRecorder()
 
 	handler.handleContainerSave(w, req)
@@ -235,15 +224,15 @@ func TestDashboardHandler_ContainerSave_LabelConfigured(t *testing.T) {
 	handler, _, _ := setupTestHandler(t)
 
 	// redis has watchcow.enable=true label
-	key := "redis:latest|6379:6379"
+	containerID := "def456"
 	form := url.Values{
 		"appname":      {"watchcow.redis"},
 		"display_name": {"Redis"},
 	}
 
-	req := httptest.NewRequest("POST", "/containers/"+url.PathEscape(key), strings.NewReader(form.Encode()))
+	req := httptest.NewRequest("POST", "/containers/"+containerID, strings.NewReader(form.Encode()))
 	req.Header.Set("Content-Type", "application/x-www-form-urlencoded")
-	req = setChiURLParam(req, "key", key)
+	req = setChiURLParam(req, "id", containerID)
 	w := httptest.NewRecorder()
 
 	handler.handleContainerSave(w, req)
@@ -257,6 +246,7 @@ func TestDashboardHandler_ContainerSave_LabelConfigured(t *testing.T) {
 func TestDashboardHandler_ContainerDelete(t *testing.T) {
 	handler, storage, _ := setupTestHandler(t)
 
+	containerID := "abc123"
 	key := ContainerKey("nginx:alpine|80:8080")
 
 	// First save a config
@@ -265,8 +255,8 @@ func TestDashboardHandler_ContainerDelete(t *testing.T) {
 		t.Fatal("config should exist before delete")
 	}
 
-	req := httptest.NewRequest("DELETE", "/containers/"+url.PathEscape(string(key)), nil)
-	req = setChiURLParam(req, "key", string(key))
+	req := httptest.NewRequest("DELETE", "/containers/"+containerID, nil)
+	req = setChiURLParam(req, "id", containerID)
 	w := httptest.NewRecorder()
 
 	handler.handleContainerDelete(w, req)
@@ -379,6 +369,7 @@ func TestDashboardHandler_SaveTriggersInstall(t *testing.T) {
 		t.Fatal("should start with no trigger calls")
 	}
 
+	containerID := "abc123"
 	key := "nginx:alpine|80:8080"
 	form := url.Values{
 		"appname":        {"watchcow.nginx"},
@@ -388,9 +379,9 @@ func TestDashboardHandler_SaveTriggersInstall(t *testing.T) {
 		"entry_path":     {"/"},
 	}
 
-	req := httptest.NewRequest("POST", "/containers/"+url.PathEscape(key), strings.NewReader(form.Encode()))
+	req := httptest.NewRequest("POST", "/containers/"+containerID, strings.NewReader(form.Encode()))
 	req.Header.Set("Content-Type", "application/x-www-form-urlencoded")
-	req = setChiURLParam(req, "key", key)
+	req = setChiURLParam(req, "id", containerID)
 	w := httptest.NewRecorder()
 
 	handler.handleContainerSave(w, req)
@@ -414,55 +405,6 @@ func TestDashboardHandler_SaveTriggersInstall(t *testing.T) {
 	}
 	if call.storedConfig.AppName != "watchcow.nginx" {
 		t.Errorf("storedConfig.AppName = %q, want %q", call.storedConfig.AppName, "watchcow.nginx")
-	}
-}
-
-func TestDashboardHandler_SaveNoTriggerWhenContainerNotFound(t *testing.T) {
-	tmpDir := t.TempDir()
-	os.Setenv("TRIM_PKGETC", tmpDir)
-	defer os.Unsetenv("TRIM_PKGETC")
-
-	storage, _ := NewDashboardStorage()
-	lister := &mockContainerLister{
-		containers: []RawContainerInfo{
-			{
-				ID:     "abc123",
-				Name:   "nginx",
-				Image:  "nginx:alpine",
-				State:  "running",
-				Ports:  map[string]string{"80": "8080"},
-				Labels: map[string]string{},
-			},
-		},
-	}
-
-	// Trigger that doesn't know about this container
-	trigger := newMockInstallTrigger()
-	// Not adding the container to containersByKey
-
-	handler, _ := NewDashboardHandler(storage, lister, trigger)
-
-	key := "nginx:alpine|80:8080"
-	form := url.Values{
-		"appname":      {"watchcow.nginx"},
-		"display_name": {"Nginx"},
-	}
-
-	req := httptest.NewRequest("POST", "/containers/"+url.PathEscape(key), strings.NewReader(form.Encode()))
-	req.Header.Set("Content-Type", "application/x-www-form-urlencoded")
-	req = setChiURLParam(req, "key", key)
-	w := httptest.NewRecorder()
-
-	handler.handleContainerSave(w, req)
-
-	// Config should still be saved
-	if !storage.Has(ContainerKey(key)) {
-		t.Fatal("config should be saved even when container not found")
-	}
-
-	// But trigger should not be called
-	if len(trigger.triggerCalls) != 0 {
-		t.Errorf("expected 0 trigger calls when container not found, got %d", len(trigger.triggerCalls))
 	}
 }
 
@@ -491,15 +433,16 @@ func TestDashboardHandler_NilTrigger(t *testing.T) {
 		t.Fatalf("NewDashboardHandler() error = %v", err)
 	}
 
+	containerID := "abc123"
 	key := "nginx:alpine|80:8080"
 	form := url.Values{
 		"appname":      {"watchcow.nginx"},
 		"display_name": {"Nginx"},
 	}
 
-	req := httptest.NewRequest("POST", "/containers/"+url.PathEscape(key), strings.NewReader(form.Encode()))
+	req := httptest.NewRequest("POST", "/containers/"+containerID, strings.NewReader(form.Encode()))
 	req.Header.Set("Content-Type", "application/x-www-form-urlencoded")
-	req = setChiURLParam(req, "key", key)
+	req = setChiURLParam(req, "id", containerID)
 	w := httptest.NewRecorder()
 
 	// Should not panic with nil trigger

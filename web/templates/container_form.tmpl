@@ -27,7 +27,7 @@
     </div>
     {{else}}
 
-    <form hx-post="containers/{{urlsafe .Key.String}}"
+    <form hx-post="containers/{{.ID}}"
           hx-target="#form-message"
           hx-swap="innerHTML">
 
@@ -200,7 +200,7 @@
             <div class="file has-name">
                 <label class="file-label">
                     <input class="file-input" type="file" name="icon" accept="image/*"
-                           hx-post="containers/{{urlsafe .Key.String}}/icon"
+                           hx-post="containers/{{.ID}}/icon"
                            hx-target="#icon-preview"
                            hx-encoding="multipart/form-data">
                     <span class="file-cta">
@@ -227,7 +227,7 @@
             </div>
             <div class="control">
                 <button class="button is-danger is-outlined" type="button"
-                        hx-delete="containers/{{urlsafe .Key.String}}"
+                        hx-delete="containers/{{.ID}}"
                         hx-target="#container-form"
                         hx-swap="innerHTML"
                         hx-confirm="Are you sure you want to delete this configuration?">

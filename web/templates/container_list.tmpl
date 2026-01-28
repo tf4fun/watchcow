@@ -1,7 +1,7 @@
 {{range .Containers}}
-<div class="container-item{{if eq .Key $.Selected}} is-selected{{end}}{{if .HasLabelConfig}} is-label-configured{{end}}"
-     data-key="{{.Key}}"
-     hx-get="containers/{{urlsafe .Key.String}}"
+<div class="container-item{{if eq .ID $.Selected}} is-selected{{end}}{{if .HasLabelConfig}} is-label-configured{{end}}"
+     data-id="{{.ID}}"
+     hx-get="containers/{{.ID}}"
      hx-target="#container-form"
      hx-swap="innerHTML"
      onclick="document.querySelectorAll('.container-item').forEach(el => el.classList.remove('is-selected')); this.classList.add('is-selected');">
