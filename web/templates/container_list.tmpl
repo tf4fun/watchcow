@@ -46,7 +46,7 @@
                     {{end}}
                 </td>
                 <td class="has-text-right">
-                    {{if $accessible}}
+                    {{if and $accessible (not .HasLabelConfig)}}
                     <button class="button is-small is-primary is-outlined"
                             hx-get="containers/{{.ID}}"
                             hx-target="#main-content"
