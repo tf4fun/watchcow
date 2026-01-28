@@ -2,7 +2,7 @@
 
 ### This script is called after the user installs the application.
 # Create CGI script for redirect mode
-cat > "${TRIM_APPDEST}/ui/index.cgi" << 'EOFCGI'
+cat > "${TRIM_APPDEST}/ui/index.cgi" << EOFCGI
 #!/bin/bash
 exec "${TRIM_APPDEST}/watchcow" --mode cgi --socket "${TRIM_PKGVAR}/watchcow.sock"
 EOFCGI
