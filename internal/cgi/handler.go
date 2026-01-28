@@ -2,113 +2,69 @@ package cgi
 
 import (
 	"context"
-	"fmt"
-	"io"
 	"net"
 	"net/http"
-	"os"
+	"net/http/cgi"
+	"net/http/httputil"
+	"net/url"
 	"strings"
-	"time"
 )
 
-// CGIHandler handles CGI requests by proxying to the Unix socket server
-type CGIHandler struct {
-	socketPath string
-	client     *http.Client
+// RunCGI runs the CGI handler that proxies requests to the Unix socket server.
+// It uses Go's standard library cgi and httputil packages.
+func RunCGI(socketPath string) {
+	// Create reverse proxy to Unix socket
+	proxy := newUnixSocketProxy(socketPath)
+
+	// Use standard CGI handler
+	cgi.Serve(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		// Strip CGI prefix from path
+		// PATH_INFO: /cgi/ThirdParty/watchcow.dashboard/index.cgi/containers/xxx
+		// We need: /containers/xxx
+		path := r.URL.Path
+		if idx := strings.Index(path, "index.cgi"); idx != -1 {
+			path = path[idx+len("index.cgi"):]
+			if path == "" {
+				path = "/"
+			}
+		}
+		r.URL.Path = path
+		r.RequestURI = path
+		if r.URL.RawQuery != "" {
+			r.RequestURI = path + "?" + r.URL.RawQuery
+		}
+
+		// Forward to Unix socket server
+		proxy.ServeHTTP(w, r)
+	}))
 }
 
-// NewCGIHandler creates a new CGI handler that proxies to the daemon
-func NewCGIHandler(socketPath string) *CGIHandler {
-	// Create HTTP client with Unix socket transport
-	transport := &http.Transport{
+// newUnixSocketProxy creates a reverse proxy that connects to a Unix socket.
+func newUnixSocketProxy(socketPath string) *httputil.ReverseProxy {
+	// Target URL (host doesn't matter for Unix socket, but required for URL parsing)
+	target, _ := url.Parse("http://localhost")
+
+	proxy := httputil.NewSingleHostReverseProxy(target)
+
+	// Override transport to use Unix socket
+	proxy.Transport = &http.Transport{
 		DialContext: func(ctx context.Context, network, addr string) (net.Conn, error) {
 			return net.Dial("unix", socketPath)
 		},
 	}
 
-	return &CGIHandler{
-		socketPath: socketPath,
-		client: &http.Client{
-			Transport: transport,
-			Timeout:   30 * time.Second,
-		},
+	// Custom error handler for when daemon is not running
+	proxy.ErrorHandler = func(w http.ResponseWriter, r *http.Request, err error) {
+		w.Header().Set("Content-Type", "text/html; charset=utf-8")
+		w.WriteHeader(http.StatusServiceUnavailable)
+		w.Write([]byte(serviceUnavailableHTML))
 	}
+
+	return proxy
 }
 
-// HandleCGI processes the CGI request by proxying to the Unix socket server
-// Expected PATH_INFO format: /cgi/ThirdParty/<AppName>/index.cgi/redirect/<base64_json>[/<path...>]
-func (h *CGIHandler) HandleCGI() {
-	pathInfo := os.Getenv("PATH_INFO")
-	if pathInfo == "" {
-		h.outputError(http.StatusBadRequest, "PATH_INFO not set")
-		return
-	}
-
-	// Find the path after "index.cgi/"
-	// e.g., "/cgi/ThirdParty/app/index.cgi/redirect/<base64>/<path>" -> "redirect/<base64>/<path>"
-	idx := strings.Index(pathInfo, "index.cgi/")
-	if idx == -1 {
-		h.outputError(http.StatusBadRequest, "Invalid CGI path format")
-		return
-	}
-	requestPath := "/" + pathInfo[idx+len("index.cgi/"):]
-
-	// Get query string
-	queryString := os.Getenv("QUERY_STRING")
-
-	// Build the full URL for the socket request
-	requestURL := "http://localhost" + requestPath
-	if queryString != "" {
-		requestURL += "?" + queryString
-	}
-
-	// Create request
-	req, err := http.NewRequest("GET", requestURL, nil)
-	if err != nil {
-		h.outputError(http.StatusInternalServerError, "Failed to create request: "+err.Error())
-		return
-	}
-
-	// Forward relevant headers
-	if host := os.Getenv("HTTP_HOST"); host != "" {
-		req.Host = host
-	}
-
-	// Execute request to Unix socket
-	resp, err := h.client.Do(req)
-	if err != nil {
-		h.outputServiceUnavailable()
-		return
-	}
-	defer resp.Body.Close()
-
-	// Output CGI response headers
-	for key, values := range resp.Header {
-		for _, value := range values {
-			fmt.Printf("%s: %s\n", key, value)
-		}
-	}
-	fmt.Printf("Status: %d %s\n", resp.StatusCode, http.StatusText(resp.StatusCode))
-	fmt.Println()
-
-	// Copy response body
-	io.Copy(os.Stdout, resp.Body)
-}
-
-// outputError outputs a CGI error response
-func (h *CGIHandler) outputError(status int, msg string) {
-	fmt.Println("Content-Type: text/html; charset=utf-8")
-	fmt.Printf("Status: %d %s\n", status, http.StatusText(status))
-	fmt.Println()
-	fmt.Printf("<html><body><h1>Error</h1><p>%s</p></body></html>\n", msg)
-}
-
-// outputServiceUnavailable outputs a 503 error when the daemon is not running
-func (h *CGIHandler) outputServiceUnavailable() {
-	fmt.Println("Content-Type: text/html; charset=utf-8")
-	fmt.Println("Status: 503 Service Unavailable")
-	fmt.Println()
-	fmt.Printf(`<!DOCTYPE html>
+// serviceUnavailableHTML is shown when the daemon is not running
+const serviceUnavailableHTML = `<!DOCTYPE html>
 <html>
 <head>
     <title>Service Unavailable</title>
@@ -140,6 +96,4 @@ func (h *CGIHandler) outputServiceUnavailable() {
         <p>Please ensure the WatchCow daemon is started.</p>
     </div>
 </body>
-</html>
-`)
-}
+</html>`

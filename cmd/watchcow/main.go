@@ -75,10 +75,9 @@ func main() {
 	}
 }
 
-// runCGIMode handles CGI requests for redirect functionality
+// runCGIMode handles CGI requests by proxying to Unix socket server
 func runCGIMode(socketPath string) {
-	handler := cgi.NewCGIHandler(socketPath)
-	handler.HandleCGI()
+	cgi.RunCGI(socketPath)
 }
 
 // runServerMode runs the Docker monitoring daemon with HTTP server

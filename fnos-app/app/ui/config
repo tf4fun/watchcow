@@ -1,11 +1,11 @@
 {
     ".url": {
-        "watchcow": {
+        "watchcow.dashboard": {
             "title": "watchcow",
             "icon": "images/icon-{0}.png",
             "type": "iframe",
             "protocol": "http",
-            "url": "/cgi/ThirdParty/watchcow/index.cgi/",
+            "url": "/cgi/ThirdParty/watchcow.dashboard/index.cgi/",
             "allUsers": false,
             "noDisplay": true
         }
