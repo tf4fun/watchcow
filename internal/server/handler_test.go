@@ -177,7 +177,6 @@ func TestDashboardHandler_ContainerSave(t *testing.T) {
 	containerID := "abc123"
 	key := "nginx:alpine|80:8080"
 	form := url.Values{
-		"appname":        {"watchcow.nginx"},
 		"display_name":   {"Nginx Test"},
 		"description":    {"Web server test"},
 		"version":        {"1.0.0"},
@@ -207,8 +206,8 @@ func TestDashboardHandler_ContainerSave(t *testing.T) {
 	if saved == nil {
 		t.Fatal("config should be saved")
 	}
-	if saved.AppName != "watchcow.nginx" {
-		t.Errorf("AppName = %q, want %q", saved.AppName, "watchcow.nginx")
+	if saved.AppName != "watchcow.nginx.8080" {
+		t.Errorf("AppName = %q, want %q", saved.AppName, "watchcow.nginx.8080")
 	}
 	if saved.DisplayName != "Nginx Test" {
 		t.Errorf("DisplayName = %q, want %q", saved.DisplayName, "Nginx Test")
@@ -221,8 +220,8 @@ func TestDashboardHandler_ContainerSave(t *testing.T) {
 		if trigger.triggerCalls[0].containerID != "abc123" {
 			t.Errorf("TriggerInstall containerID = %q, want %q", trigger.triggerCalls[0].containerID, "abc123")
 		}
-		if trigger.triggerCalls[0].storedConfig.AppName != "watchcow.nginx" {
-			t.Errorf("TriggerInstall storedConfig.AppName = %q, want %q", trigger.triggerCalls[0].storedConfig.AppName, "watchcow.nginx")
+		if trigger.triggerCalls[0].storedConfig.AppName != "watchcow.nginx.8080" {
+			t.Errorf("TriggerInstall storedConfig.AppName = %q, want %q", trigger.triggerCalls[0].storedConfig.AppName, "watchcow.nginx.8080")
 		}
 	}
 }
@@ -233,7 +232,6 @@ func TestDashboardHandler_ContainerSave_LabelConfigured(t *testing.T) {
 	// redis has watchcow.enable=true label
 	containerID := "def456"
 	form := url.Values{
-		"appname":      {"watchcow.redis"},
 		"display_name": {"Redis"},
 	}
 
@@ -379,7 +377,6 @@ func TestDashboardHandler_SaveTriggersInstall(t *testing.T) {
 	containerID := "abc123"
 	key := "nginx:alpine|80:8080"
 	form := url.Values{
-		"appname":        {"watchcow.nginx"},
 		"display_name":   {"Nginx"},
 		"entry_protocol": {"http"},
 		"entry_port":     {"8080"},
@@ -410,8 +407,8 @@ func TestDashboardHandler_SaveTriggersInstall(t *testing.T) {
 	if call.storedConfig == nil {
 		t.Fatal("storedConfig should not be nil")
 	}
-	if call.storedConfig.AppName != "watchcow.nginx" {
-		t.Errorf("storedConfig.AppName = %q, want %q", call.storedConfig.AppName, "watchcow.nginx")
+	if call.storedConfig.AppName != "watchcow.nginx.8080" {
+		t.Errorf("storedConfig.AppName = %q, want %q", call.storedConfig.AppName, "watchcow.nginx.8080")
 	}
 }
 
@@ -443,7 +440,6 @@ func TestDashboardHandler_NilTrigger(t *testing.T) {
 	containerID := "abc123"
 	key := "nginx:alpine|80:8080"
 	form := url.Values{
-		"appname":      {"watchcow.nginx"},
 		"display_name": {"Nginx"},
 	}
 

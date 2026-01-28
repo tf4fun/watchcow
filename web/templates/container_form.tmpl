@@ -58,22 +58,12 @@
     {{else}}
 
     <form hx-post="containers/{{.ID}}"
-          hx-target="#form-message"
+          hx-target="#main-content"
           hx-swap="innerHTML">
 
         <div id="form-message" class="mb-4"></div>
 
         <h5 class="title is-5">应用设置</h5>
-
-        <div class="field">
-            <label class="label">应用名称</label>
-            <div class="control">
-                <input class="input" type="text" name="appname"
-                       value="{{$.Config.AppName}}"
-                       placeholder="watchcow.{{.Name}}">
-            </div>
-            <p class="help">fnOS 中的唯一标识（如 watchcow.myapp）</p>
-        </div>
 
         <div class="field">
             <label class="label">显示名称</label>
@@ -269,13 +259,15 @@
                     hx-delete="containers/{{.ID}}"
                     hx-target="#main-content"
                     hx-swap="innerHTML"
+                    hx-include="unset"
                     hx-confirm="确定要删除此配置吗？">
                 删除配置
             </button>
             <button class="button" type="button"
                     hx-get="containers"
                     hx-target="#main-content"
-                    hx-swap="innerHTML">
+                    hx-swap="innerHTML"
+                    hx-include="unset">
                 返回列表
             </button>
         </div>

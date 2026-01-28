@@ -310,8 +310,15 @@ func (h *DashboardHandler) handleContainerSave(w http.ResponseWriter, r *http.Re
 		}
 	}
 
-	// Update config from form
-	config.AppName = r.FormValue("appname")
+	// Auto-generate appName (not user-editable)
+	// Include first host port for uniqueness
+	appName := "watchcow." + container.Name
+	for _, hostPort := range container.Ports {
+		appName = appName + "." + hostPort
+		break
+	}
+	config.AppName = appName
+
 	config.DisplayName = r.FormValue("display_name")
 	config.Description = r.FormValue("description")
 	config.Version = r.FormValue("version")
@@ -321,10 +328,7 @@ func (h *DashboardHandler) handleContainerSave(w http.ResponseWriter, r *http.Re
 	// Parse entries
 	config.Entries = h.parseEntriesFromForm(r)
 
-	// Validate
-	if config.AppName == "" {
-		config.AppName = "watchcow." + container.Name
-	}
+	// Validate defaults
 	if config.DisplayName == "" {
 		config.DisplayName = container.Name
 	}

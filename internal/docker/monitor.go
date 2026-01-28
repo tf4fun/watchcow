@@ -226,6 +226,9 @@ func (m *Monitor) runOperationWorker(ctx context.Context) {
 
 			case "destroy":
 				m.processDestroy(op)
+
+			case "dashboard_uninstall":
+				m.processDashboardUninstall(op)
 			}
 		}
 	}
@@ -811,13 +814,28 @@ func (m *Monitor) ListAllContainers(ctx context.Context) ([]ContainerInfo, error
 	return result, nil
 }
 
-// TriggerUninstall uninstalls an app by name (called from dashboard when config is deleted).
+// TriggerUninstall queues an app uninstall operation (called from dashboard when config is deleted).
 func (m *Monitor) TriggerUninstall(appName string) {
 	if appName == "" {
 		return
 	}
 
-	slog.Info("Triggering app uninstall from dashboard", "app", appName)
+	slog.Info("Queueing app uninstall from dashboard", "app", appName)
+
+	m.queueOperation(&AppOperation{
+		Type:    "dashboard_uninstall",
+		AppName: appName,
+	})
+}
+
+// processDashboardUninstall handles uninstall triggered from dashboard.
+func (m *Monitor) processDashboardUninstall(op *AppOperation) {
+	appName := op.AppName
+	if appName == "" {
+		return
+	}
+
+	slog.Info("Processing dashboard uninstall", "app", appName)
 
 	// Unregister from app registry
 	m.registry.Unregister(appName)
@@ -836,4 +854,6 @@ func (m *Monitor) TriggerUninstall(appName string) {
 		}
 		return true
 	})
+
+	slog.Info("Dashboard uninstall completed", "app", appName)
 }
