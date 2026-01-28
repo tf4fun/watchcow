@@ -591,10 +591,7 @@ func (m *Monitor) handleDockerEvent(ctx context.Context, event events.Message) {
 	case "destroy":
 		slog.Info("Container destroyed", "container", containerName, "id", containerID)
 
-		// Remove from tracking
-		m.containers.Delete(containerID)
-
-		// Queue destroy operation
+		// Queue destroy operation (processDestroy will handle cleanup and uninstall)
 		m.queueOperation(&AppOperation{
 			Type:        "destroy",
 			ContainerID: containerID,
