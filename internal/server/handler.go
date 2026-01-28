@@ -100,7 +100,6 @@ func (h *DashboardHandler) Mount(r chi.Router) {
 	r.Get("/containers/{id}", h.handleContainerForm)
 	r.Post("/containers/{id}", h.handleContainerSave)
 	r.Delete("/containers/{id}", h.handleContainerDelete)
-	r.Post("/containers/{id}/icon", h.handleIconUpload)
 }
 
 // listContainers fetches containers and enriches with storage info.
@@ -293,10 +292,18 @@ func (h *DashboardHandler) handleContainerSave(w http.ResponseWriter, r *http.Re
 		return
 	}
 
-	// Parse form
-	if err := r.ParseForm(); err != nil {
-		h.renderError(w, http.StatusBadRequest, "解析表单失败")
-		return
+	// Parse form (supports both multipart and urlencoded)
+	contentType := r.Header.Get("Content-Type")
+	if strings.HasPrefix(contentType, "multipart/form-data") {
+		if err := r.ParseMultipartForm(10 << 20); err != nil {
+			h.renderError(w, http.StatusBadRequest, "解析表单失败")
+			return
+		}
+	} else {
+		if err := r.ParseForm(); err != nil {
+			h.renderError(w, http.StatusBadRequest, "解析表单失败")
+			return
+		}
 	}
 
 	key := container.Key
@@ -337,6 +344,16 @@ func (h *DashboardHandler) handleContainerSave(w http.ResponseWriter, r *http.Re
 	}
 	if config.Maintainer == "" {
 		config.Maintainer = "WatchCow"
+	}
+
+	// Handle icon upload if provided
+	if file, _, err := r.FormFile("icon"); err == nil {
+		defer file.Close()
+		if iconBase64, err := h.processIcon(file); err == nil {
+			config.IconBase64 = iconBase64
+		} else {
+			slog.Warn("Failed to process icon", "error", err)
+		}
 	}
 
 	// Save
@@ -410,49 +427,17 @@ func (h *DashboardHandler) handleContainerDelete(w http.ResponseWriter, r *http.
 </article>`))
 }
 
-// handleIconUpload handles icon upload and resizing.
-func (h *DashboardHandler) handleIconUpload(w http.ResponseWriter, r *http.Request) {
-	ctx := r.Context()
-
-	containerID := chi.URLParam(r, "id")
-	if containerID == "" {
-		h.renderError(w, http.StatusBadRequest, "无效的容器 ID")
-		return
-	}
-
-	// Get container to find its key
-	container, err := h.getContainerByID(ctx, containerID)
-	if err != nil {
-		h.renderError(w, http.StatusNotFound, "未找到容器")
-		return
-	}
-
-	key := container.Key
-
-	// Parse multipart form (max 10MB)
-	if err := r.ParseMultipartForm(10 << 20); err != nil {
-		h.renderError(w, http.StatusBadRequest, "解析上传失败")
-		return
-	}
-
-	file, _, err := r.FormFile("icon")
-	if err != nil {
-		h.renderError(w, http.StatusBadRequest, "未上传文件")
-		return
-	}
-	defer file.Close()
-
+// processIcon reads an image file, resizes it to 256x256, and returns base64 encoded PNG.
+func (h *DashboardHandler) processIcon(file io.Reader) (string, error) {
 	// Read and decode image
 	imgData, err := io.ReadAll(file)
 	if err != nil {
-		h.renderError(w, http.StatusBadRequest, "读取文件失败")
-		return
+		return "", fmt.Errorf("read file: %w", err)
 	}
 
 	img, _, err := image.Decode(bytes.NewReader(imgData))
 	if err != nil {
-		h.renderError(w, http.StatusBadRequest, "无效的图片格式")
-		return
+		return "", fmt.Errorf("decode image: %w", err)
 	}
 
 	// Resize to 256x256
@@ -461,31 +446,11 @@ func (h *DashboardHandler) handleIconUpload(w http.ResponseWriter, r *http.Reque
 	// Encode as PNG
 	var buf bytes.Buffer
 	if err := png.Encode(&buf, resized); err != nil {
-		h.renderError(w, http.StatusInternalServerError, "编码图片失败")
-		return
+		return "", fmt.Errorf("encode png: %w", err)
 	}
 
 	// Convert to base64
-	base64Icon := base64.StdEncoding.EncodeToString(buf.Bytes())
-
-	// Update config
-	config := h.storage.Get(key)
-	if config == nil {
-		h.renderError(w, http.StatusNotFound, "未找到配置，请先保存配置")
-		return
-	}
-
-	config.IconBase64 = base64Icon
-	config.UpdatedAt = time.Now()
-
-	if err := h.storage.Set(config); err != nil {
-		h.renderError(w, http.StatusInternalServerError, "保存图标失败")
-		return
-	}
-
-	// Return icon preview
-	w.Header().Set("Content-Type", "text/html; charset=utf-8")
-	fmt.Fprintf(w, `<img src="data:image/png;base64,%s" alt="Icon" style="max-width: 64px; max-height: 64px;">`, base64Icon)
+	return base64.StdEncoding.EncodeToString(buf.Bytes()), nil
 }
 
 // parseEntriesFromForm extracts entries from form data.

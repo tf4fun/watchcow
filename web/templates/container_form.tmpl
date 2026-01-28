@@ -59,7 +59,8 @@
 
     <form hx-post="containers/{{.ID}}"
           hx-target="#main-content"
-          hx-swap="innerHTML">
+          hx-swap="innerHTML"
+          hx-encoding="multipart/form-data">
 
         <div id="form-message" class="mb-4"></div>
 
@@ -206,24 +207,21 @@
         <h5 class="title is-5">图标</h5>
 
         <div class="field">
-            <div class="file has-name">
+            <div class="file">
                 <label class="file-label">
-                    <input class="file-input" type="file" name="icon" accept="image/*"
-                           hx-post="containers/{{.ID}}/icon"
-                           hx-target="#icon-preview"
-                           hx-encoding="multipart/form-data">
+                    <input class="file-input" type="file" name="icon" accept="image/*">
                     <span class="file-cta">
                         <span class="file-label">选择图标...</span>
                     </span>
                 </label>
             </div>
-            <div id="icon-preview" class="mt-3">
-                {{if $.Config.IconBase64}}
+            {{if $.Config.IconBase64}}
+            <div class="mt-3">
                 <figure class="image is-64x64">
                     <img src="data:image/png;base64,{{$.Config.IconBase64}}" alt="Icon">
                 </figure>
-                {{end}}
             </div>
+            {{end}}
             <p class="help">上传图标（将自动缩放至 256x256）</p>
         </div>
 
