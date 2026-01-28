@@ -172,29 +172,14 @@
             </div>
         </div>
 
-        <div class="columns">
-            <div class="column">
-                <div class="field">
-                    <label class="label">打开方式</label>
-                    <div class="control">
-                        <div class="select is-fullwidth">
-                            <select name="entry_ui_type">
-                                <option value="url" {{if eq $entry.UIType "url"}}selected{{end}}>新标签页 (url)</option>
-                                <option value="iframe" {{if eq $entry.UIType "iframe"}}selected{{end}}>桌面窗口 (iframe)</option>
-                            </select>
-                        </div>
-                    </div>
-                </div>
-            </div>
-            <div class="column">
-                <div class="field">
-                    <label class="label">关联文件类型</label>
-                    <div class="control">
-                        <input class="input" type="text" name="entry_file_types"
-                               value="{{range $i, $ft := $entry.FileTypes}}{{if $i}},{{end}}{{$ft}}{{end}}"
-                               placeholder="pdf,doc,txt">
-                    </div>
-                    <p class="help">逗号分隔的文件类型，用于右键菜单</p>
+        <div class="field">
+            <label class="label">打开方式</label>
+            <div class="control">
+                <div class="select">
+                    <select name="entry_ui_type">
+                        <option value="url" {{if eq $entry.UIType "url"}}selected{{end}}>新标签页 (url)</option>
+                        <option value="iframe" {{if eq $entry.UIType "iframe"}}selected{{end}}>桌面窗口 (iframe)</option>
+                    </select>
                 </div>
             </div>
         </div>
@@ -213,13 +198,6 @@
             <label class="checkbox">
                 <input type="checkbox" name="entry_all_users" value="true" {{if $entry.AllUsers}}checked{{end}}>
                 允许所有用户访问
-            </label>
-        </div>
-
-        <div class="field">
-            <label class="checkbox">
-                <input type="checkbox" name="entry_no_display" value="true" {{if $entry.NoDisplay}}checked{{end}}>
-                从桌面隐藏（仅在右键菜单中显示）
             </label>
         </div>
 

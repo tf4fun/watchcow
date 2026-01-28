@@ -490,28 +490,17 @@ func (h *DashboardHandler) handleIconUpload(w http.ResponseWriter, r *http.Reque
 
 // parseEntriesFromForm extracts entries from form data.
 func (h *DashboardHandler) parseEntriesFromForm(r *http.Request) []StoredEntry {
-	// For now, support a single default entry
-	// Multi-entry support can be added later
+	// Dashboard supports single entry only
+	// For multi-entry, use Docker labels
 	entry := StoredEntry{
-		Name:      "", // Default entry
-		Title:     r.FormValue("entry_title"),
-		Protocol:  r.FormValue("entry_protocol"),
-		Port:      r.FormValue("entry_port"),
-		Path:      r.FormValue("entry_path"),
-		UIType:    r.FormValue("entry_ui_type"),
-		AllUsers:  r.FormValue("entry_all_users") == "true",
-		NoDisplay: r.FormValue("entry_no_display") == "true",
-		Redirect:  r.FormValue("entry_redirect"),
-	}
-
-	// Parse file types
-	if ft := r.FormValue("entry_file_types"); ft != "" {
-		for _, t := range strings.Split(ft, ",") {
-			t = strings.TrimSpace(t)
-			if t != "" {
-				entry.FileTypes = append(entry.FileTypes, t)
-			}
-		}
+		Name:     "", // Default entry
+		Title:    r.FormValue("entry_title"),
+		Protocol: r.FormValue("entry_protocol"),
+		Port:     r.FormValue("entry_port"),
+		Path:     r.FormValue("entry_path"),
+		UIType:   r.FormValue("entry_ui_type"),
+		AllUsers: r.FormValue("entry_all_users") == "true",
+		Redirect: r.FormValue("entry_redirect"),
 	}
 
 	// Default protocol
