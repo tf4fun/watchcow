@@ -7,7 +7,6 @@ import (
 	"fmt"
 	"html/template"
 	"image"
-	"image/png"
 	"io"
 	"log/slog"
 	"net/http"
@@ -16,7 +15,6 @@ import (
 	"time"
 
 	"github.com/go-chi/chi/v5"
-	"golang.org/x/image/draw"
 
 	"watchcow/internal/docker"
 	"watchcow/web"
@@ -431,30 +429,22 @@ func (h *DashboardHandler) handleContainerDelete(w http.ResponseWriter, r *http.
 </article>`))
 }
 
-// processIcon reads an image file, resizes it to 256x256, and returns base64 encoded PNG.
+// processIcon validates an uploaded image and returns base64 encoded data.
+// Image processing (square padding, resizing) is handled by fpkgen.handleIcons
+// during app generation, keeping the install flow consistent with label-based icons.
 func (h *DashboardHandler) processIcon(file io.Reader) (string, error) {
-	// Read and decode image
 	imgData, err := io.ReadAll(file)
 	if err != nil {
 		return "", fmt.Errorf("read file: %w", err)
 	}
 
-	img, _, err := image.Decode(bytes.NewReader(imgData))
+	// Validate it's a decodable image
+	_, _, err = image.Decode(bytes.NewReader(imgData))
 	if err != nil {
 		return "", fmt.Errorf("decode image: %w", err)
 	}
 
-	// Resize to 256x256
-	resized := resizeImage(img, 256, 256)
-
-	// Encode as PNG
-	var buf bytes.Buffer
-	if err := png.Encode(&buf, resized); err != nil {
-		return "", fmt.Errorf("encode png: %w", err)
-	}
-
-	// Convert to base64
-	return base64.StdEncoding.EncodeToString(buf.Bytes()), nil
+	return base64.StdEncoding.EncodeToString(imgData), nil
 }
 
 // parseEntriesFromForm extracts entries from form data.
@@ -557,11 +547,4 @@ func (h *DashboardHandler) renderError(w http.ResponseWriter, status int, msg st
 	w.Header().Set("Content-Type", "text/html; charset=utf-8")
 	w.WriteHeader(status)
 	fmt.Fprintf(w, `<article class="notification is-danger">%s</article>`, template.HTMLEscapeString(msg))
-}
-
-// resizeImage resizes an image to the specified dimensions.
-func resizeImage(src image.Image, width, height int) image.Image {
-	dst := image.NewRGBA(image.Rect(0, 0, width, height))
-	draw.CatmullRom.Scale(dst, dst.Bounds(), src, src.Bounds(), draw.Over, nil)
-	return dst
 }
