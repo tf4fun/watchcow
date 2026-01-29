@@ -209,19 +209,20 @@
         <div class="field">
             <div class="file">
                 <label class="file-label">
-                    <input class="file-input" type="file" name="icon" accept="image/*">
+                    <input class="file-input" type="file" name="icon" accept="image/*" id="icon-input"
+                           onchange="previewIcon(this)">
                     <span class="file-cta">
                         <span class="file-label">选择图标...</span>
                     </span>
                 </label>
             </div>
-            {{if $.Config.IconBase64}}
-            <div class="mt-3">
+            <div class="mt-3" id="icon-preview">
+                {{if $.Config.IconBase64}}
                 <figure class="image is-64x64">
                     <img src="data:image/png;base64,{{$.Config.IconBase64}}" alt="Icon">
                 </figure>
+                {{end}}
             </div>
-            {{end}}
             <p class="help">上传图标（将自动缩放至 256x256）</p>
         </div>
 
@@ -248,6 +249,18 @@
             </button>
         </div>
     </form>
+    <script>
+    function previewIcon(input) {
+        const preview = document.getElementById('icon-preview');
+        if (input.files && input.files[0]) {
+            const reader = new FileReader();
+            reader.onload = function(e) {
+                preview.innerHTML = '<figure class="image is-64x64"><img src="' + e.target.result + '" alt="Icon"></figure>';
+            };
+            reader.readAsDataURL(input.files[0]);
+        }
+    }
+    </script>
     {{end}}
 </div>
 {{end}}
