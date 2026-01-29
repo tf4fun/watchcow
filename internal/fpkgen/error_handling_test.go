@@ -18,7 +18,7 @@ import (
 // **Validates: Requirements 3.7**
 //
 // For any file path that does not exist on the filesystem,
-// the loadLocalIcon function SHALL return an error indicating the file was not found.
+// the loadIcon function SHALL return an error indicating the file was not found.
 
 // TestProperty_InvalidInputErrorHandling tests that invalid image data returns an error
 // Property 5: For any byte slice that does not represent a valid image of a supported format,
@@ -42,8 +42,9 @@ func TestProperty_InvalidInputErrorHandling(t *testing.T) {
 			return true // Skip this case
 		}
 
-		// loadLocalIcon should return an error for unknown format
-		_, err := loadLocalIcon(tmpFile)
+		// URLIconSource should return an error for unknown format
+		source := &URLIconSource{URL: "file://" + tmpFile}
+		_, err := source.Load()
 		if err == nil {
 			t.Logf("Expected error for invalid data (len=%d), got nil", len(data))
 			return false
@@ -60,7 +61,7 @@ func TestProperty_InvalidInputErrorHandling(t *testing.T) {
 
 // TestProperty_NonExistentFileError tests that non-existent files return an error
 // Property 6: For any file path that does not exist on the filesystem,
-// the loadLocalIcon function SHALL return an error indicating the file was not found.
+// the loadIcon function SHALL return an error indicating the file was not found.
 func TestProperty_NonExistentFileError(t *testing.T) {
 	f := func(filename string) bool {
 		// Skip empty filenames
@@ -77,15 +78,16 @@ func TestProperty_NonExistentFileError(t *testing.T) {
 		tmpDir := t.TempDir()
 		nonExistentPath := filepath.Join(tmpDir, "nonexistent_subdir", filename)
 
-		// loadLocalIcon should return an error for non-existent file
-		_, err := loadLocalIcon(nonExistentPath)
+		// URLIconSource should return an error for non-existent file
+		source := &URLIconSource{URL: "file://" + nonExistentPath}
+		_, err := source.Load()
 		if err == nil {
 			t.Logf("Expected error for non-existent file %q, got nil", nonExistentPath)
 			return false
 		}
 
-		// Error should indicate file not found
-		return strings.Contains(err.Error(), "file not found")
+		// Error should indicate file read failure
+		return strings.Contains(err.Error(), "failed to read file")
 	}
 
 	if err := quick.Check(f, &quick.Config{MaxCount: 100}); err != nil {
@@ -93,18 +95,19 @@ func TestProperty_NonExistentFileError(t *testing.T) {
 	}
 }
 
-// TestLoadLocalIcon_NonExistentFile tests loadLocalIcon with a non-existent file
+// TestLoadLocalIcon_NonExistentFile tests URLIconSource with a non-existent file
 func TestLoadLocalIcon_NonExistentFile(t *testing.T) {
-	_, err := loadLocalIcon("/nonexistent/path/to/icon.png")
+	source := &URLIconSource{URL: "file:///nonexistent/path/to/icon.png"}
+	_, err := source.Load()
 	if err == nil {
 		t.Error("Expected error for non-existent file, got nil")
 	}
-	if !strings.Contains(err.Error(), "file not found") {
-		t.Errorf("Error should contain 'file not found', got: %v", err)
+	if !strings.Contains(err.Error(), "failed to read file") {
+		t.Errorf("Error should contain 'failed to read file', got: %v", err)
 	}
 }
 
-// TestLoadLocalIcon_InvalidFormat tests loadLocalIcon with invalid image data
+// TestLoadLocalIcon_InvalidFormat tests URLIconSource with invalid image data
 func TestLoadLocalIcon_InvalidFormat(t *testing.T) {
 	// Create a temp file with invalid data
 	tmpDir := t.TempDir()
@@ -114,7 +117,8 @@ func TestLoadLocalIcon_InvalidFormat(t *testing.T) {
 		t.Fatalf("Failed to write temp file: %v", err)
 	}
 
-	_, err := loadLocalIcon(tmpFile)
+	source := &URLIconSource{URL: "file://" + tmpFile}
+	_, err := source.Load()
 	if err == nil {
 		t.Error("Expected error for invalid format, got nil")
 	}
@@ -123,7 +127,7 @@ func TestLoadLocalIcon_InvalidFormat(t *testing.T) {
 	}
 }
 
-// TestLoadLocalIcon_EmptyFile tests loadLocalIcon with an empty file
+// TestLoadLocalIcon_EmptyFile tests URLIconSource with an empty file
 func TestLoadLocalIcon_EmptyFile(t *testing.T) {
 	tmpDir := t.TempDir()
 	tmpFile := filepath.Join(tmpDir, "empty.bin")
@@ -131,13 +135,14 @@ func TestLoadLocalIcon_EmptyFile(t *testing.T) {
 		t.Fatalf("Failed to write temp file: %v", err)
 	}
 
-	_, err := loadLocalIcon(tmpFile)
+	source := &URLIconSource{URL: "file://" + tmpFile}
+	_, err := source.Load()
 	if err == nil {
 		t.Error("Expected error for empty file, got nil")
 	}
 }
 
-// TestLoadLocalIcon_CorruptedICO tests loadLocalIcon with corrupted ICO data
+// TestLoadLocalIcon_CorruptedICO tests URLIconSource with corrupted ICO data
 func TestLoadLocalIcon_CorruptedICO(t *testing.T) {
 	// Create a temp file with ICO magic bytes but corrupted content
 	tmpDir := t.TempDir()
@@ -148,15 +153,16 @@ func TestLoadLocalIcon_CorruptedICO(t *testing.T) {
 		t.Fatalf("Failed to write temp file: %v", err)
 	}
 
-	_, err := loadLocalIcon(tmpFile)
+	source := &URLIconSource{URL: "file://" + tmpFile}
+	_, err := source.Load()
 	if err == nil {
 		t.Error("Expected error for corrupted ICO, got nil")
 	}
 }
 
-// TestLoadIconFromSource_EmptySource tests loadIconFromSource with empty source
+// TestLoadIconFromSource_EmptySource tests loadIcon with empty source
 func TestLoadIconFromSource_EmptySource(t *testing.T) {
-	_, err := loadIconFromSource("", "")
+	_, err := loadIcon("", "")
 	if err == nil {
 		t.Error("Expected error for empty source, got nil")
 	}
@@ -165,20 +171,20 @@ func TestLoadIconFromSource_EmptySource(t *testing.T) {
 	}
 }
 
-// TestLoadIconFromSource_UnsupportedScheme tests loadIconFromSource with unsupported scheme
+// TestLoadIconFromSource_UnsupportedScheme tests loadIcon with unsupported scheme
 func TestLoadIconFromSource_UnsupportedScheme(t *testing.T) {
-	_, err := loadIconFromSource("ftp://example.com/icon.png", "")
+	_, err := loadIcon("ftp://example.com/icon.png", "")
 	if err == nil {
 		t.Error("Expected error for unsupported scheme, got nil")
 	}
-	if !strings.Contains(err.Error(), "unsupported icon source") {
-		t.Errorf("Error should contain 'unsupported icon source', got: %v", err)
+	if !strings.Contains(err.Error(), "unrecognized icon source format") {
+		t.Errorf("Error should contain 'unrecognized icon source format', got: %v", err)
 	}
 }
 
-// TestLoadIconFromSource_RelativePathNoBasePath tests loadIconFromSource with relative path but no basePath
+// TestLoadIconFromSource_RelativePathNoBasePath tests loadIcon with relative path but no basePath
 func TestLoadIconFromSource_RelativePathNoBasePath(t *testing.T) {
-	_, err := loadIconFromSource("file://icon.png", "")
+	_, err := loadIcon("file://icon.png", "")
 	if err == nil {
 		t.Error("Expected error for relative path without basePath, got nil")
 	}

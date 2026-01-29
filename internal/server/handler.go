@@ -347,13 +347,17 @@ func (h *DashboardHandler) handleContainerSave(w http.ResponseWriter, r *http.Re
 	}
 
 	// Handle icon upload if provided
-	if file, _, err := r.FormFile("icon"); err == nil {
+	if file, header, err := r.FormFile("icon"); err == nil {
 		defer file.Close()
+		slog.Debug("Icon file received", "filename", header.Filename, "size", header.Size)
 		if iconBase64, err := h.processIcon(file); err == nil {
 			config.IconBase64 = iconBase64
+			slog.Debug("Icon processed successfully", "base64_len", len(iconBase64))
 		} else {
 			slog.Warn("Failed to process icon", "error", err)
 		}
+	} else if err != http.ErrMissingFile {
+		slog.Debug("FormFile error", "error", err)
 	}
 
 	// Save
@@ -363,7 +367,7 @@ func (h *DashboardHandler) handleContainerSave(w http.ResponseWriter, r *http.Re
 		return
 	}
 
-	slog.Info("Saved container config", "key", key, "appname", config.AppName)
+	slog.Info("Saved container config", "key", key, "appname", config.AppName, "has_icon", config.IconBase64 != "")
 
 	// Trigger installation if container is running
 	if h.trigger != nil {

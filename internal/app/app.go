@@ -37,7 +37,7 @@ type Entry struct {
 	Path      string        // URL path
 	UIType    string        // "url" (new tab) or "iframe" (desktop window)
 	AllUsers  bool          // Access permission (true = all users)
-	Icon      string        // Icon URL or file path
+	Icon      string        // Icon source: URL (file:// or http://) from labels, or base64 data from dashboard
 	FileTypes []string      // Supported file types for right-click menu
 	NoDisplay bool          // Hide from desktop (only show in right-click menu)
 	Control   *EntryControl // Permission control settings
@@ -96,7 +96,7 @@ type App struct {
 	Environment []string
 
 	// Metadata
-	Icon          string
+	Icon          string // Icon source: URL (file:// or http://) from labels, or base64 data from dashboard
 	RestartPolicy string
 
 	// Labels (original watchcow labels for reference)

@@ -337,7 +337,7 @@ func (m *Monitor) generateFromStoredConfig(ctx context.Context, containerID stri
 		ContainerID:   containerID,
 		ContainerName: strings.TrimPrefix(info.Name, "/"),
 		Image:         info.Config.Image,
-		Icon:          storedCfg.IconBase64, // Will be handled as base64
+		Icon:          storedCfg.IconBase64, // Base64 data from dashboard upload → Base64IconSource
 		Entries:       make([]fpkgen.Entry, 0, len(storedCfg.Entries)),
 	}
 
@@ -354,7 +354,7 @@ func (m *Monitor) generateFromStoredConfig(ctx context.Context, containerID stri
 			FileTypes: e.FileTypes,
 			NoDisplay: e.NoDisplay,
 			Redirect:  e.Redirect,
-			Icon:      e.IconBase64,
+			Icon:      e.IconBase64, // Base64 data from dashboard upload
 		}
 		config.Entries = append(config.Entries, entry)
 	}

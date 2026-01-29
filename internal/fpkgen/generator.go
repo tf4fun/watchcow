@@ -179,7 +179,7 @@ func (g *Generator) extractConfig(container *dockercontainer.InspectResponse) *A
 	sanitizedName := sanitizeAppName(name)
 	appName := getLabel(labels, "watchcow.appname", fmt.Sprintf("watchcow.%s", sanitizedName))
 
-	defaultIcon := getLabel(labels, "watchcow.icon", buildIconURLFromImage(container.Config.Image))
+	defaultIcon := getLabel(labels, "watchcow.icon", buildIconURLFromImage(container.Config.Image)) // URL → URLIconSource
 	displayName := getLabel(labels, "watchcow.display_name", prettifyName(name))
 
 	config := &AppConfig{
