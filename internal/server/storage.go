@@ -50,11 +50,31 @@ func NewDashboardStorage() (*DashboardStorage, error) {
 }
 
 // load reads configurations from disk.
+// If a .tmp file exists from an interrupted save, attempts to recover from it.
 func (s *DashboardStorage) load() error {
-	f, err := os.Open(s.filePath)
+	tmpPath := s.filePath + ".tmp"
+
+	// Check for interrupted atomic write: .tmp exists but main file is missing or stale
+	if _, err := os.Stat(tmpPath); err == nil {
+		if s.tryLoadFrom(tmpPath) == nil {
+			slog.Info("Recovered storage from incomplete save", "path", tmpPath)
+			// Promote tmp to main file
+			os.Rename(tmpPath, s.filePath)
+			return nil
+		}
+		// tmp is corrupt, discard it
+		os.Remove(tmpPath)
+	}
+
+	return s.tryLoadFrom(s.filePath)
+}
+
+// tryLoadFrom attempts to load configs from a specific file path.
+func (s *DashboardStorage) tryLoadFrom(path string) error {
+	f, err := os.Open(path)
 	if err != nil {
 		if os.IsNotExist(err) {
-			return nil // No file yet, not an error
+			return nil
 		}
 		return err
 	}
@@ -64,16 +84,30 @@ func (s *DashboardStorage) load() error {
 	return decoder.Decode(&s.configs)
 }
 
-// save writes configurations to disk.
+// save writes configurations to disk using atomic write (write-to-temp + rename)
+// to prevent data loss on power failure.
 func (s *DashboardStorage) save() error {
-	f, err := os.Create(s.filePath)
+	tmpPath := s.filePath + ".tmp"
+	f, err := os.Create(tmpPath)
 	if err != nil {
 		return err
 	}
-	defer f.Close()
 
 	encoder := gob.NewEncoder(f)
-	return encoder.Encode(s.configs)
+	if err := encoder.Encode(s.configs); err != nil {
+		f.Close()
+		os.Remove(tmpPath)
+		return err
+	}
+
+	if err := f.Sync(); err != nil {
+		f.Close()
+		os.Remove(tmpPath)
+		return err
+	}
+	f.Close()
+
+	return os.Rename(tmpPath, s.filePath)
 }
 
 // Get retrieves a configuration by key.
