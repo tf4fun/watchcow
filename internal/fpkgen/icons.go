@@ -31,7 +31,7 @@ func (g *Generator) handleIcons(appDir string, config *AppConfig) error {
 	// Process each entry's icon
 	for _, entry := range config.Entries {
 		entryIcon, err := loadIcon(entry.Icon, basePath)
-		if err != nil {
+		if err != nil && entry.Icon != "" {
 			fmt.Printf("Warning: Failed to load icon for entry '%s': %v\n", entry.Name, err)
 		}
 
