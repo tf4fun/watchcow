@@ -138,6 +138,7 @@ func (m *Monitor) SetConfigProvider(provider ConfigProvider) {
 
 // TriggerInstall triggers app installation for a container using stored config.
 // Called by dashboard after saving config.
+// If app is already installed, it will be uninstalled first then reinstalled with new config.
 func (m *Monitor) TriggerInstall(containerID string, storedConfig *StoredConfig) {
 	// Get container state
 	v, ok := m.containers.Load(containerID)
@@ -153,9 +154,17 @@ func (m *Monitor) TriggerInstall(containerID string, storedConfig *StoredConfig)
 		return
 	}
 
-	// Check if already installed
-	if state.Installed {
-		slog.Debug("Container already installed, skipping trigger install", "id", containerID)
+	// If already installed, uninstall first then reinstall with new config
+	if state.Installed && state.AppName != "" {
+		slog.Info("Config updated, reinstalling app", "container", state.ContainerName, "app", state.AppName)
+		m.queueOperation(&AppOperation{
+			Type:          "dashboard_reinstall",
+			ContainerID:   containerID,
+			ContainerName: state.ContainerName,
+			AppName:       state.AppName,
+			Labels:        state.Labels,
+			StoredConfig:  storedConfig,
+		})
 		return
 	}
 
@@ -220,6 +229,9 @@ func (m *Monitor) runOperationWorker(ctx context.Context) {
 			switch op.Type {
 			case "container_start", "dashboard_install":
 				m.processContainerStart(ctx, op)
+
+			case "dashboard_reinstall":
+				m.processDashboardReinstall(ctx, op)
 
 			case "stop":
 				m.processStop(op)
@@ -856,4 +868,27 @@ func (m *Monitor) processDashboardUninstall(op *AppOperation) {
 	})
 
 	slog.Info("Dashboard uninstall completed", "app", appName)
+}
+
+// processDashboardReinstall handles config update: uninstall old app, then install with new config.
+func (m *Monitor) processDashboardReinstall(ctx context.Context, op *AppOperation) {
+	oldAppName := op.AppName
+
+	// Step 1: Uninstall the old app
+	slog.Info("Uninstalling old app for reinstall", "app", oldAppName)
+	m.registry.Unregister(oldAppName)
+	if m.installer != nil {
+		m.installer.Uninstall(oldAppName)
+	}
+
+	// Clear installed state
+	if v, ok := m.containers.Load(op.ContainerID); ok {
+		state := v.(*ContainerState)
+		state.AppName = ""
+		state.Installed = false
+	}
+
+	// Step 2: Install with new config (reuse processContainerStart logic)
+	slog.Info("Installing app with new config", "container", op.ContainerName)
+	m.processContainerStart(ctx, op)
 }
