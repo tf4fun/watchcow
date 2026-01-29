@@ -341,7 +341,7 @@ func (m *Monitor) generateFromStoredConfig(ctx context.Context, containerID stri
 		Entries:       make([]fpkgen.Entry, 0, len(storedCfg.Entries)),
 	}
 
-	// Convert entries
+	// Convert entries (dashboard path: icon comes from config level, not entry level)
 	for _, e := range storedCfg.Entries {
 		entry := fpkgen.Entry{
 			Name:      e.Name,
@@ -354,7 +354,7 @@ func (m *Monitor) generateFromStoredConfig(ctx context.Context, containerID stri
 			FileTypes: e.FileTypes,
 			NoDisplay: e.NoDisplay,
 			Redirect:  e.Redirect,
-			Icon:      e.IconBase64, // Base64 data from dashboard upload
+			Icon:      storedCfg.IconBase64, // Base64 data from dashboard upload
 		}
 		config.Entries = append(config.Entries, entry)
 	}

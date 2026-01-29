@@ -219,7 +219,8 @@
             <div class="mt-3 mb-2" id="icon-preview">
                 {{if $.Config.IconBase64}}
                 <figure class="image is-64x64">
-                    <img src="data:image/png;base64,{{$.Config.IconBase64}}" alt="Icon">
+                    <img src="data:image/png;base64,{{$.Config.IconBase64}}" alt="Icon"
+                         style="object-fit:contain;height:100%">
                 </figure>
                 {{end}}
             </div>
@@ -255,7 +256,7 @@
         if (input.files && input.files[0]) {
             const reader = new FileReader();
             reader.onload = function(e) {
-                preview.innerHTML = '<figure class="image is-64x64"><img src="' + e.target.result + '" alt="Icon"></figure>';
+                preview.innerHTML = '<figure class="image is-64x64"><img src="' + e.target.result + '" alt="Icon" style="object-fit:contain;height:100%"></figure>';
             };
             reader.readAsDataURL(input.files[0]);
         }
