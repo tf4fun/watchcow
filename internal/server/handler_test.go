@@ -16,10 +16,10 @@ import (
 
 // mockContainerLister implements ContainerLister for testing
 type mockContainerLister struct {
-	containers []RawContainerInfo
+	containers []docker.ContainerInfo
 }
 
-func (m *mockContainerLister) ListAllContainers(ctx context.Context) ([]RawContainerInfo, error) {
+func (m *mockContainerLister) ListAllContainers(ctx context.Context) ([]docker.ContainerInfo, error) {
 	return m.containers, nil
 }
 
@@ -67,7 +67,7 @@ func setupTestHandler(t *testing.T) (*DashboardHandler, *DashboardStorage, *mock
 	}
 
 	lister := &mockContainerLister{
-		containers: []RawContainerInfo{
+		containers: []docker.ContainerInfo{
 			{
 				ID:    "abc123",
 				Name:  "nginx",
@@ -419,7 +419,7 @@ func TestDashboardHandler_NilTrigger(t *testing.T) {
 
 	storage, _ := NewDashboardStorage()
 	lister := &mockContainerLister{
-		containers: []RawContainerInfo{
+		containers: []docker.ContainerInfo{
 			{
 				ID:     "abc123",
 				Name:   "nginx",

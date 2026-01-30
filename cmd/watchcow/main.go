@@ -26,32 +26,6 @@ func getDefaultSocketPath() string {
 	return fallbackSocketPath
 }
 
-// monitorAdapter adapts docker.Monitor to server.ContainerLister
-type monitorAdapter struct {
-	monitor *docker.Monitor
-}
-
-func (a *monitorAdapter) ListAllContainers(ctx context.Context) ([]server.RawContainerInfo, error) {
-	containers, err := a.monitor.ListAllContainers(ctx)
-	if err != nil {
-		return nil, err
-	}
-
-	result := make([]server.RawContainerInfo, len(containers))
-	for i, c := range containers {
-		result[i] = server.RawContainerInfo{
-			ID:          c.ID,
-			Name:        c.Name,
-			Image:       c.Image,
-			State:       c.State,
-			Ports:       c.Ports,
-			Labels:      c.Labels,
-			NetworkMode: c.NetworkMode,
-		}
-	}
-	return result, nil
-}
-
 func main() {
 	// Define flags
 	mode := flag.String("mode", "server", "Run mode: server or cgi")
@@ -129,7 +103,7 @@ func runServerMode(socketPath string, debug bool) {
 	// Step 3: Create HTTP handlers and router
 	redirectHandler := server.NewRedirectHandler(monitor.Registry())
 
-	dashboardHandler, err := server.NewDashboardHandler(dashboardStorage, &monitorAdapter{monitor}, monitor)
+	dashboardHandler, err := server.NewDashboardHandler(dashboardStorage, monitor, monitor)
 	if err != nil {
 		slog.Error("Failed to create dashboard handler", "error", err)
 		os.Exit(1)

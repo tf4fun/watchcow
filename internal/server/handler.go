@@ -22,7 +22,7 @@ import (
 
 // ContainerLister provides container listing capability.
 type ContainerLister interface {
-	ListAllContainers(ctx context.Context) ([]RawContainerInfo, error)
+	ListAllContainers(ctx context.Context) ([]docker.ContainerInfo, error)
 }
 
 // AppTrigger triggers app installation/uninstallation for containers.
@@ -31,17 +31,6 @@ type AppTrigger interface {
 	TriggerInstall(containerID string, storedConfig *docker.StoredConfig)
 	// TriggerUninstall triggers app uninstallation by app name.
 	TriggerUninstall(appName string)
-}
-
-// RawContainerInfo is the raw container info from Docker.
-type RawContainerInfo struct {
-	ID          string
-	Name        string
-	Image       string
-	State       string
-	Ports       map[string]string
-	Labels      map[string]string
-	NetworkMode string
 }
 
 // DashboardHandler provides HTTP handlers for the dashboard.
@@ -102,25 +91,25 @@ func (h *DashboardHandler) Mount(r chi.Router) {
 
 // listContainers fetches containers and enriches with storage info.
 func (h *DashboardHandler) listContainers(ctx context.Context) ([]ContainerInfo, error) {
-	raw, err := h.lister.ListAllContainers(ctx)
+	containers, err := h.lister.ListAllContainers(ctx)
 	if err != nil {
 		return nil, err
 	}
 
-	result := make([]ContainerInfo, 0, len(raw))
-	for _, r := range raw {
-		key := NewContainerKey(r.Image, r.Ports)
-		hasLabelConfig := r.Labels["watchcow.enable"] == "true"
+	result := make([]ContainerInfo, 0, len(containers))
+	for _, c := range containers {
+		key := NewContainerKey(c.Image, c.Ports)
+		hasLabelConfig := c.Labels["watchcow.enable"] == "true"
 		hasStoredConfig := h.storage.Has(key)
 
 		info := ContainerInfo{
-			ID:              r.ID,
-			Name:            r.Name,
-			Image:           r.Image,
-			State:           r.State,
-			Ports:           r.Ports,
-			Labels:          r.Labels,
-			NetworkMode:     r.NetworkMode,
+			ID:              c.ID,
+			Name:            c.Name,
+			Image:           c.Image,
+			State:           c.State,
+			Ports:           c.Ports,
+			Labels:          c.Labels,
+			NetworkMode:     c.NetworkMode,
 			Key:             key,
 			HasLabelConfig:  hasLabelConfig,
 			HasStoredConfig: hasStoredConfig,
