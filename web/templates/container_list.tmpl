@@ -1,0 +1,68 @@
+<div class="table-container">
+    <table class="table is-fullwidth is-hoverable is-striped">
+        <thead>
+            <tr>
+                <th>容器名称</th>
+                <th>镜像</th>
+                <th>端口</th>
+                <th>状态</th>
+                <th>配置</th>
+                <th></th>
+            </tr>
+        </thead>
+        <tbody>
+            {{range .Containers}}
+            {{$accessible := .HasAccessiblePorts}}
+            <tr{{if not $accessible}} class="has-text-grey-light"{{end}}>
+                <td>
+                    <strong>{{.Name}}</strong>
+                </td>
+                <td>
+                    <span class="is-size-7">{{.Image}}</span>
+                </td>
+                <td>
+                    {{if .Ports}}
+                        {{range $cport, $hport := .Ports}}
+                        <span class="tag is-small">{{$cport}}→{{$hport}}</span>
+                        {{end}}
+                    {{else if eq .NetworkMode "host"}}
+                        <span class="tag is-info is-small">host 网络</span>
+                    {{else}}
+                        <span class="tag is-warning is-small">无端口</span>
+                    {{end}}
+                </td>
+                <td>
+                    <span class="tag is-small {{if eq .State "running"}}is-success{{else if eq .State "exited"}}is-warning{{end}}">
+                        {{if eq .State "running"}}运行中{{else if eq .State "exited"}}已停止{{else}}{{.State}}{{end}}
+                    </span>
+                </td>
+                <td>
+                    {{if .HasLabelConfig}}
+                        <span class="tag is-info is-small">标签配置</span>
+                    {{else if .HasStoredConfig}}
+                        <span class="tag is-success is-small">已配置</span>
+                    {{else}}
+                        <span class="tag is-small">未配置</span>
+                    {{end}}
+                </td>
+                <td class="has-text-right">
+                    {{if and $accessible (not .HasLabelConfig)}}
+                    <button class="button is-small is-primary is-outlined"
+                            hx-get="containers/{{.ID}}"
+                            hx-target="#main-content"
+                            hx-swap="innerHTML">
+                        配置
+                    </button>
+                    {{end}}
+                </td>
+            </tr>
+            {{else}}
+            <tr>
+                <td colspan="6" class="has-text-centered has-text-grey">
+                    未找到容器
+                </td>
+            </tr>
+            {{end}}
+        </tbody>
+    </table>
+</div>

@@ -9,13 +9,27 @@ import (
 // TestLoadTestDataFiles tests that all testdata files can be loaded correctly
 // This validates Requirements 1.1, 1.2, 1.3, 1.4, 1.5
 
+// loadTestIcon is a helper to load icons from testdata directory using URLIconSource
+func loadTestIcon(path string) (*URLIconSource, error) {
+	absPath, err := filepath.Abs(path)
+	if err != nil {
+		return nil, err
+	}
+	return &URLIconSource{URL: "file://" + absPath}, nil
+}
+
 func TestLoadTestData_PNG(t *testing.T) {
 	path := filepath.Join("testdata", "test.png")
 	if _, err := os.Stat(path); os.IsNotExist(err) {
 		t.Skip("testdata/test.png not found, run 'go run testdata/generate_testdata.go' to create")
 	}
 
-	img, err := loadLocalIcon(path)
+	source, err := loadTestIcon(path)
+	if err != nil {
+		t.Fatalf("Failed to create icon source: %v", err)
+	}
+
+	img, err := source.Load()
 	if err != nil {
 		t.Fatalf("Failed to load PNG: %v", err)
 	}
@@ -32,7 +46,12 @@ func TestLoadTestData_JPEG(t *testing.T) {
 		t.Skip("testdata/test.jpg not found, run 'go run testdata/generate_testdata.go' to create")
 	}
 
-	img, err := loadLocalIcon(path)
+	source, err := loadTestIcon(path)
+	if err != nil {
+		t.Fatalf("Failed to create icon source: %v", err)
+	}
+
+	img, err := source.Load()
 	if err != nil {
 		t.Fatalf("Failed to load JPEG: %v", err)
 	}
@@ -49,7 +68,12 @@ func TestLoadTestData_BMP(t *testing.T) {
 		t.Skip("testdata/test.bmp not found, run 'go run testdata/generate_testdata.go' to create")
 	}
 
-	img, err := loadLocalIcon(path)
+	source, err := loadTestIcon(path)
+	if err != nil {
+		t.Fatalf("Failed to create icon source: %v", err)
+	}
+
+	img, err := source.Load()
 	if err != nil {
 		t.Fatalf("Failed to load BMP: %v", err)
 	}
@@ -66,7 +90,12 @@ func TestLoadTestData_WebP(t *testing.T) {
 		t.Skip("testdata/test.webp not found, run 'go run testdata/generate_testdata.go' to create")
 	}
 
-	img, err := loadLocalIcon(path)
+	source, err := loadTestIcon(path)
+	if err != nil {
+		t.Fatalf("Failed to create icon source: %v", err)
+	}
+
+	img, err := source.Load()
 	if err != nil {
 		t.Fatalf("Failed to load WebP: %v", err)
 	}
@@ -84,7 +113,12 @@ func TestLoadTestData_ICO(t *testing.T) {
 		t.Skip("testdata/test.ico not found, run 'go run testdata/generate_testdata.go' to create")
 	}
 
-	img, err := loadLocalIcon(path)
+	source, err := loadTestIcon(path)
+	if err != nil {
+		t.Fatalf("Failed to create icon source: %v", err)
+	}
+
+	img, err := source.Load()
 	if err != nil {
 		t.Fatalf("Failed to load ICO: %v", err)
 	}
@@ -101,7 +135,12 @@ func TestLoadTestData_ICOMulti(t *testing.T) {
 		t.Skip("testdata/test_multi.ico not found, run 'go run testdata/generate_testdata.go' to create")
 	}
 
-	img, err := loadLocalIcon(path)
+	source, err := loadTestIcon(path)
+	if err != nil {
+		t.Fatalf("Failed to create icon source: %v", err)
+	}
+
+	img, err := source.Load()
 	if err != nil {
 		t.Fatalf("Failed to load multi-resolution ICO: %v", err)
 	}
@@ -119,7 +158,12 @@ func TestLoadTestData_Invalid(t *testing.T) {
 		t.Skip("testdata/invalid.bin not found, run 'go run testdata/generate_testdata.go' to create")
 	}
 
-	_, err := loadLocalIcon(path)
+	source, err := loadTestIcon(path)
+	if err != nil {
+		t.Fatalf("Failed to create icon source: %v", err)
+	}
+
+	_, err = source.Load()
 	if err == nil {
 		t.Error("Expected error for invalid file, got nil")
 	}

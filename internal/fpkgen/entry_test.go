@@ -2,6 +2,7 @@ package fpkgen
 
 import (
 	"encoding/json"
+	"strings"
 	"testing"
 )
 
@@ -18,7 +19,7 @@ func TestParseEntries_DefaultEntry(t *testing.T) {
 		"watchcow.icon":         "https://example.com/icon.png",
 	}
 
-	entries := parseEntries(labels, "Test App", "https://default.icon/icon.png", "9090")
+	entries := ParseEntries(labels, "Test App", "https://default.icon/icon.png", "9090")
 
 	if len(entries) != 1 {
 		t.Fatalf("expected 1 entry, got %d", len(entries))
@@ -58,7 +59,7 @@ func TestParseEntries_DefaultEntryDefaults(t *testing.T) {
 		"watchcow.service_port": "8080",
 	}
 
-	entries := parseEntries(labels, "Test App", "https://default.icon/icon.png", "9090")
+	entries := ParseEntries(labels, "Test App", "https://default.icon/icon.png", "9090")
 
 	if len(entries) != 1 {
 		t.Fatalf("expected 1 entry, got %d", len(entries))
@@ -99,7 +100,7 @@ func TestParseEntries_NamedEntry(t *testing.T) {
 		"watchcow.admin.icon":         "https://example.com/admin-icon.png",
 	}
 
-	entries := parseEntries(labels, "Test App", "https://default.icon/icon.png", "9090")
+	entries := ParseEntries(labels, "Test App", "https://default.icon/icon.png", "9090")
 
 	if len(entries) != 1 {
 		t.Fatalf("expected 1 entry, got %d", len(entries))
@@ -127,7 +128,7 @@ func TestParseEntries_NamedEntryDefaultTitle(t *testing.T) {
 		"watchcow.admin.service_port": "8081",
 	}
 
-	entries := parseEntries(labels, "Test App", "https://default.icon/icon.png", "9090")
+	entries := ParseEntries(labels, "Test App", "https://default.icon/icon.png", "9090")
 
 	if len(entries) != 1 {
 		t.Fatalf("expected 1 entry, got %d", len(entries))
@@ -158,7 +159,7 @@ func TestParseEntries_MultipleEntries(t *testing.T) {
 		"watchcow.api.no_display":   "true",
 	}
 
-	entries := parseEntries(labels, "Test App", "https://default.icon/icon.png", "9090")
+	entries := ParseEntries(labels, "Test App", "https://default.icon/icon.png", "9090")
 
 	if len(entries) != 3 {
 		t.Fatalf("expected 3 entries, got %d", len(entries))
@@ -226,7 +227,7 @@ func TestParseEntries_OnlyNamedEntries(t *testing.T) {
 		"watchcow.admin.title":        "Admin",
 	}
 
-	entries := parseEntries(labels, "Test App", "https://default.icon/icon.png", "9090")
+	entries := ParseEntries(labels, "Test App", "https://default.icon/icon.png", "9090")
 
 	if len(entries) != 2 {
 		t.Fatalf("expected 2 entries, got %d", len(entries))
@@ -249,7 +250,7 @@ func TestParseEntries_FileTypes(t *testing.T) {
 		"watchcow.editor.no_display": "true",
 	}
 
-	entries := parseEntries(labels, "Editor", "https://default.icon/icon.png", "8080")
+	entries := ParseEntries(labels, "Editor", "https://default.icon/icon.png", "8080")
 
 	if len(entries) != 1 {
 		t.Fatalf("expected 1 entry, got %d", len(entries))
@@ -279,7 +280,7 @@ func TestParseEntries_Control(t *testing.T) {
 		"watchcow.admin.control.access_perm": "editable",
 	}
 
-	entries := parseEntries(labels, "Test App", "https://default.icon/icon.png", "9090")
+	entries := ParseEntries(labels, "Test App", "https://default.icon/icon.png", "9090")
 
 	if len(entries) != 2 {
 		t.Fatalf("expected 2 entries, got %d", len(entries))
@@ -288,9 +289,10 @@ func TestParseEntries_Control(t *testing.T) {
 	// Find default entry
 	var defaultEntry, adminEntry *Entry
 	for i := range entries {
-		if entries[i].Name == "" {
+		switch entries[i].Name {
+		case "":
 			defaultEntry = &entries[i]
-		} else if entries[i].Name == "admin" {
+		case "admin":
 			adminEntry = &entries[i]
 		}
 	}
@@ -533,12 +535,152 @@ func TestHasDefaultEntry(t *testing.T) {
 	}
 }
 
+// TestParseEntries_Redirect tests redirect label parsing
+func TestParseEntries_Redirect(t *testing.T) {
+	labels := map[string]string{
+		"watchcow.enable":       "true",
+		"watchcow.service_port": "8080",
+		"watchcow.redirect":     "example.com:8080",
+	}
+
+	entries := ParseEntries(labels, "Test App", "https://default.icon/icon.png", "9090")
+
+	if len(entries) != 1 {
+		t.Fatalf("expected 1 entry, got %d", len(entries))
+	}
+
+	e := entries[0]
+	if e.Redirect != "example.com:8080" {
+		t.Errorf("expected redirect 'example.com:8080', got %q", e.Redirect)
+	}
+}
+
+// TestParseEntries_NamedEntryRedirect tests redirect label parsing for named entries
+func TestParseEntries_NamedEntryRedirect(t *testing.T) {
+	labels := map[string]string{
+		"watchcow.enable":         "true",
+		"watchcow.admin.redirect": "admin.example.com",
+		// Note: no service_port specified, should inherit defaultPort
+	}
+
+	entries := ParseEntries(labels, "Test App", "https://default.icon/icon.png", "9090")
+
+	var adminEntry *Entry
+	for i := range entries {
+		if entries[i].Name == "admin" {
+			adminEntry = &entries[i]
+			break
+		}
+	}
+
+	if adminEntry == nil {
+		t.Fatal("admin entry not found")
+	}
+	if adminEntry.Redirect != "admin.example.com" {
+		t.Errorf("expected redirect 'admin.example.com', got %q", adminEntry.Redirect)
+	}
+	// Named entry without service_port should inherit defaultPort
+	if adminEntry.Port != "9090" {
+		t.Errorf("expected port '9090' (inherited from defaultPort), got %q", adminEntry.Port)
+	}
+}
+
+// TestGenerateUIConfigJSON_Redirect tests JSON generation with redirect mode
+func TestGenerateUIConfigJSON_Redirect(t *testing.T) {
+	config := &AppConfig{
+		AppName:     "watchcow.testapp",
+		DisplayName: "Test App",
+		Entries: []Entry{
+			{
+				Name:     "",
+				Title:    "Test App",
+				Protocol: "http",
+				Port:     "8080",
+				Path:     "/dashboard",
+				UIType:   "url",
+				AllUsers: true,
+				Icon:     "https://example.com/icon.png",
+				Redirect: "https://external.example.com",
+			},
+		},
+	}
+
+	data := NewTemplateData(config)
+	jsonBytes, err := GenerateUIConfigJSON(data)
+	if err != nil {
+		t.Fatalf("GenerateUIConfigJSON failed: %v", err)
+	}
+
+	var result UIConfig
+	if err := json.Unmarshal(jsonBytes, &result); err != nil {
+		t.Fatalf("failed to parse generated JSON: %v", err)
+	}
+
+	entry, ok := result.URL["watchcow.testapp"]
+	if !ok {
+		t.Fatal("entry 'watchcow.testapp' not found in JSON")
+	}
+
+	// Port should not be present in redirect mode (omitempty)
+	if entry.Port != "" {
+		t.Errorf("expected empty port in redirect mode, got %q", entry.Port)
+	}
+
+	// Verify port key is not in the raw JSON
+	if strings.Contains(string(jsonBytes), `"port"`) {
+		t.Errorf("port field should not be present in JSON when redirect mode is enabled")
+	}
+
+	// URL should be CGI path with appname and entry
+	// Format: /cgi/ThirdParty/<appname>/index.cgi/redirect/<appname>/<entry>[/<path>]
+	expectedURL := "/cgi/ThirdParty/watchcow.testapp/index.cgi/redirect/watchcow.testapp/_/dashboard"
+	if entry.URL != expectedURL {
+		t.Errorf("URL should be %q, got %q", expectedURL, entry.URL)
+	}
+}
+
+// TestGenerateUIConfigJSON_RedirectWithRootPath tests redirect mode with root path
+func TestGenerateUIConfigJSON_RedirectWithRootPath(t *testing.T) {
+	config := &AppConfig{
+		AppName: "watchcow.app",
+		Entries: []Entry{
+			{
+				Name:     "",
+				Port:     "3000",
+				Path:     "/",
+				Redirect: "https://myapp.example.com:8443",
+			},
+		},
+	}
+
+	data := NewTemplateData(config)
+	jsonBytes, err := GenerateUIConfigJSON(data)
+	if err != nil {
+		t.Fatalf("GenerateUIConfigJSON failed: %v", err)
+	}
+
+	var result UIConfig
+	if err := json.Unmarshal(jsonBytes, &result); err != nil {
+		t.Fatalf("failed to parse generated JSON: %v", err)
+	}
+
+	entry := result.URL["watchcow.app"]
+
+	// URL should be CGI path with appname and entry (no trailing path for root)
+	// Format: /cgi/ThirdParty/<appname>/index.cgi/redirect/<appname>/<entry>
+	expectedURL := "/cgi/ThirdParty/watchcow.app/index.cgi/redirect/watchcow.app/_"
+	if entry.URL != expectedURL {
+		t.Errorf("URL should be %q, got %q", expectedURL, entry.URL)
+	}
+}
+
 // TestIsEntryField tests isEntryField function
 func TestIsEntryField(t *testing.T) {
 	validFields := []string{
 		"service_port", "protocol", "path", "ui_type",
 		"all_users", "icon", "title", "file_types", "no_display",
 		"control.access_perm", "control.port_perm", "control.path_perm",
+		"redirect",
 	}
 
 	for _, field := range validFields {

@@ -1,0 +1,24 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>WatchCow 控制面板</title>
+    <style>{{.BulmaCSS}}</style>
+    <script>{{.HtmxJS}}</script>
+</head>
+<body>
+    <section class="section">
+        <div class="container">
+            <h1 class="title">
+                <span>🐮</span> WatchCow
+            </h1>
+            <p class="subtitle has-text-grey">容器配置管理</p>
+
+            <div id="main-content" hx-get="containers" hx-trigger="load" hx-swap="innerHTML">
+                <progress class="progress is-small is-primary" max="100">加载中...</progress>
+            </div>
+        </div>
+    </section>
+</body>
+</html>

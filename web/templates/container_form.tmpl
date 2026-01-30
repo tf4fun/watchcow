@@ -1,0 +1,267 @@
+{{with .Container}}
+<nav class="breadcrumb mb-5" aria-label="breadcrumbs">
+    <ul>
+        <li><a hx-get="containers" hx-target="#main-content" hx-swap="innerHTML">容器列表</a></li>
+        <li class="is-active"><a href="#" aria-current="page">{{.Name}}</a></li>
+    </ul>
+</nav>
+
+<div class="box">
+    <div class="level mb-4">
+        <div class="level-left">
+            <div class="level-item">
+                <div>
+                    <h2 class="title is-4 mb-1">{{.Name}}</h2>
+                    <p class="subtitle is-6 has-text-grey">{{.Image}}</p>
+                </div>
+            </div>
+        </div>
+        <div class="level-right">
+            <div class="level-item">
+                <span class="tag {{if eq .State "running"}}is-success{{else if eq .State "exited"}}is-warning{{end}}">
+                    {{if eq .State "running"}}运行中{{else if eq .State "exited"}}已停止{{else}}{{.State}}{{end}}
+                </span>
+            </div>
+        </div>
+    </div>
+
+    {{if .HasLabelConfig}}
+    <article class="message is-warning">
+        <div class="message-body">
+            <strong>标签配置容器</strong><br>
+            该容器已通过 Docker 标签（watchcow.enable=true）配置。
+            如需修改，请更新容器标签后重启容器。
+        </div>
+    </article>
+
+    <div class="content">
+        <h5 class="title is-6">当前标签</h5>
+        <table class="table is-narrow is-fullwidth">
+            <tbody>
+            {{range $key, $value := .Labels}}
+            {{if hasPrefix $key "watchcow."}}
+            <tr>
+                <td><code>{{$key}}</code></td>
+                <td>{{$value}}</td>
+            </tr>
+            {{end}}
+            {{end}}
+            </tbody>
+        </table>
+    </div>
+
+    <div class="buttons">
+        <button class="button" hx-get="containers" hx-target="#main-content" hx-swap="innerHTML">
+            返回列表
+        </button>
+    </div>
+    {{else}}
+
+    <form hx-post="containers/{{.ID}}"
+          hx-target="#main-content"
+          hx-swap="innerHTML"
+          hx-encoding="multipart/form-data">
+
+        <div id="form-message" class="mb-4"></div>
+
+        <h5 class="title is-5">应用设置</h5>
+
+        <div class="field">
+            <label class="label">显示名称</label>
+            <div class="control">
+                <input class="input" type="text" name="display_name"
+                       value="{{$.Config.DisplayName}}"
+                       placeholder="{{.Name}}">
+            </div>
+            <p class="help">在 fnOS 中显示的名称</p>
+        </div>
+
+        <div class="field">
+            <label class="label">描述</label>
+            <div class="control">
+                <textarea class="textarea" name="description"
+                          placeholder="{{.Image}}">{{$.Config.Description}}</textarea>
+            </div>
+        </div>
+
+        <div class="columns">
+            <div class="column">
+                <div class="field">
+                    <label class="label">版本</label>
+                    <div class="control">
+                        <input class="input" type="text" name="version"
+                               value="{{$.Config.Version}}"
+                               placeholder="1.0.0">
+                    </div>
+                </div>
+            </div>
+            <div class="column">
+                <div class="field">
+                    <label class="label">维护者</label>
+                    <div class="control">
+                        <input class="input" type="text" name="maintainer"
+                               value="{{$.Config.Maintainer}}"
+                               placeholder="WatchCow">
+                    </div>
+                </div>
+            </div>
+        </div>
+
+        <hr>
+
+        <h5 class="title is-5">入口配置</h5>
+
+        {{$entry := index $.Config.Entries 0}}
+
+        <div class="field">
+            <label class="label">标题</label>
+            <div class="control">
+                <input class="input" type="text" name="entry_title"
+                       value="{{$entry.Title}}"
+                       placeholder="{{$.Config.DisplayName}}">
+            </div>
+            <p class="help">入口标题（默认使用显示名称）</p>
+        </div>
+
+        <div class="columns">
+            <div class="column is-3">
+                <div class="field">
+                    <label class="label">协议</label>
+                    <div class="control">
+                        <div class="select is-fullwidth">
+                            <select name="entry_protocol">
+                                <option value="http" {{if eq $entry.Protocol "http"}}selected{{end}}>HTTP</option>
+                                <option value="https" {{if eq $entry.Protocol "https"}}selected{{end}}>HTTPS</option>
+                            </select>
+                        </div>
+                    </div>
+                </div>
+            </div>
+            <div class="column is-3">
+                <div class="field">
+                    <label class="label">端口</label>
+                    <div class="control">
+                        {{if .Ports}}
+                        <div class="select is-fullwidth">
+                            <select name="entry_port">
+                                {{range $cport, $hport := .Ports}}
+                                <option value="{{$hport}}" {{if eq $entry.Port $hport}}selected{{end}}>{{$hport}}</option>
+                                {{end}}
+                            </select>
+                        </div>
+                        {{else}}
+                        <input class="input" type="number" name="entry_port"
+                               value="{{$entry.Port}}"
+                               placeholder="8080"
+                               min="1" max="65535">
+                        {{end}}
+                    </div>
+                    {{if eq .NetworkMode "host"}}
+                    <p class="help">host 网络模式，请输入容器监听的端口</p>
+                    {{end}}
+                </div>
+            </div>
+            <div class="column">
+                <div class="field">
+                    <label class="label">路径</label>
+                    <div class="control">
+                        <input class="input" type="text" name="entry_path"
+                               value="{{$entry.Path}}"
+                               placeholder="/">
+                    </div>
+                </div>
+            </div>
+        </div>
+
+        <div class="field">
+            <label class="label">打开方式</label>
+            <div class="control">
+                <div class="select">
+                    <select name="entry_ui_type">
+                        <option value="url" {{if eq $entry.UIType "url"}}selected{{end}}>新标签页 (url)</option>
+                        <option value="iframe" {{if eq $entry.UIType "iframe"}}selected{{end}}>桌面窗口 (iframe)</option>
+                    </select>
+                </div>
+            </div>
+        </div>
+
+        <div class="field">
+            <label class="label">外部跳转地址</label>
+            <div class="control">
+                <input class="input" type="text" name="entry_redirect"
+                       value="{{$entry.Redirect}}"
+                       placeholder="https://example.com">
+            </div>
+            <p class="help">远程访问时的外部跳转 URL（通过 CGI 重定向）</p>
+        </div>
+
+        <div class="field">
+            <label class="checkbox">
+                <input type="checkbox" name="entry_all_users" value="true" {{if $entry.AllUsers}}checked{{end}}>
+                允许所有用户访问
+            </label>
+        </div>
+
+        <hr>
+
+        <h5 class="title is-5">图标</h5>
+
+        <div class="field">
+            <div class="file">
+                <label class="file-label">
+                    <input class="file-input" type="file" name="icon" accept="image/*" id="icon-input"
+                           onchange="previewIcon(this)">
+                    <span class="file-cta">
+                        <span class="file-label">选择图标...</span>
+                    </span>
+                </label>
+            </div>
+            <div class="mt-3 mb-2" id="icon-preview">
+                {{if $.Config.IconBase64}}
+                <figure class="image is-64x64">
+                    <img src="data:image/png;base64,{{$.Config.IconBase64}}" alt="Icon"
+                         style="object-fit:contain;height:100%">
+                </figure>
+                {{end}}
+            </div>
+            <p class="help">上传图标（将自动缩放至 256x256）</p>
+        </div>
+
+        <hr>
+
+        <div class="buttons">
+            <button class="button is-primary" type="submit">
+                保存配置
+            </button>
+            <button class="button is-danger is-outlined" type="button"
+                    hx-delete="containers/{{.ID}}"
+                    hx-target="#main-content"
+                    hx-swap="innerHTML"
+                    hx-include="unset"
+                    hx-confirm="确定要删除此配置吗？">
+                删除配置
+            </button>
+            <button class="button" type="button"
+                    hx-get="containers"
+                    hx-target="#main-content"
+                    hx-swap="innerHTML"
+                    hx-include="unset">
+                返回列表
+            </button>
+        </div>
+    </form>
+    <script>
+    function previewIcon(input) {
+        const preview = document.getElementById('icon-preview');
+        if (input.files && input.files[0]) {
+            const reader = new FileReader();
+            reader.onload = function(e) {
+                preview.innerHTML = '<figure class="image is-64x64"><img src="' + e.target.result + '" alt="Icon" style="object-fit:contain;height:100%"></figure>';
+            };
+            reader.readAsDataURL(input.files[0]);
+        }
+    }
+    </script>
+    {{end}}
+</div>
+{{end}}

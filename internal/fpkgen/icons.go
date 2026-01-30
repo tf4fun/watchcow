@@ -6,12 +6,8 @@ import (
 	"fmt"
 	"image"
 	"image/png"
-	"io"
-	"net/http"
 	"os"
 	"path/filepath"
-	"strings"
-	"time"
 
 	xdraw "golang.org/x/image/draw"
 
@@ -34,8 +30,8 @@ func (g *Generator) handleIcons(appDir string, config *AppConfig) error {
 
 	// Process each entry's icon
 	for _, entry := range config.Entries {
-		entryIcon, err := loadIconFromSource(entry.Icon, basePath)
-		if err != nil {
+		entryIcon, err := loadIcon(entry.Icon, basePath)
+		if err != nil && entry.Icon != "" {
 			fmt.Printf("Warning: Failed to load icon for entry '%s': %v\n", entry.Name, err)
 		}
 
@@ -98,7 +94,7 @@ func (g *Generator) handleIcons(appDir string, config *AppConfig) error {
 		if !hasDefaultEntry {
 			// Use first entry's icon for root icons
 			firstEntry := config.Entries[0]
-			entryIcon, _ := loadIconFromSource(firstEntry.Icon, basePath)
+			entryIcon, _ := loadIcon(firstEntry.Icon, basePath)
 			if entryIcon == nil {
 				if defaultIcon == nil {
 					defaultIcon, _ = loadDefaultIcon()
@@ -116,6 +112,19 @@ func (g *Generator) handleIcons(appDir string, config *AppConfig) error {
 	return nil
 }
 
+// loadIcon loads an icon from the given source string.
+// Supports URL sources (file://, http://, https://) and base64 encoded data.
+func loadIcon(source string, basePath string) (image.Image, error) {
+	iconSource, err := ParseIconSource(source, basePath)
+	if err != nil {
+		return nil, err
+	}
+	if iconSource == nil {
+		return nil, fmt.Errorf("empty icon source")
+	}
+	return iconSource.Load()
+}
+
 // getBasePath extracts the compose working directory from container labels
 // Returns empty string if the label is not present
 func getBasePath(labels map[string]string) string {
@@ -124,50 +133,6 @@ func getBasePath(labels map[string]string) string {
 		return dir
 	}
 	return "" // Empty string indicates relative paths cannot be resolved
-}
-
-// resolveFilePath resolves a file:// URL path to an absolute filesystem path
-// basePath: the base directory for resolving relative paths (compose working directory)
-// Supports:
-// - Absolute paths: file:///path/to/file -> /path/to/file
-// - Relative paths: file://./icon.png -> basePath/./icon.png
-// - Parent paths: file://../icon.png -> basePath/../icon.png
-func resolveFilePath(fileURL string, basePath string) (string, error) {
-	path := strings.TrimPrefix(fileURL, "file://")
-
-	// Absolute path: starts with /
-	if filepath.IsAbs(path) {
-		return path, nil
-	}
-
-	// Relative path: requires basePath
-	if basePath == "" {
-		return "", fmt.Errorf("relative path requires base path from compose working directory")
-	}
-
-	return filepath.Join(basePath, path), nil
-}
-
-// loadIconFromSource loads an icon from URL or local file path
-// basePath: the base directory for resolving relative file:// paths (compose working directory)
-func loadIconFromSource(iconSource string, basePath string) (image.Image, error) {
-	if iconSource == "" {
-		return nil, fmt.Errorf("empty icon source")
-	}
-
-	if strings.HasPrefix(iconSource, "file://") {
-		// Resolve file:// path (supports both absolute and relative paths)
-		localPath, err := resolveFilePath(iconSource, basePath)
-		if err != nil {
-			return nil, fmt.Errorf("failed to resolve file path: %w", err)
-		}
-		return loadLocalIcon(localPath)
-	} else if strings.HasPrefix(iconSource, "http") {
-		// Download from URL
-		return downloadIcon(iconSource)
-	}
-
-	return nil, fmt.Errorf("unsupported icon source: %s", iconSource)
 }
 
 // loadDefaultIcon loads the embedded default icon
@@ -180,88 +145,6 @@ func loadDefaultIcon() (image.Image, error) {
 	img, _, err := image.Decode(bytes.NewReader(data))
 	if err != nil {
 		return nil, err
-	}
-
-	return img, nil
-}
-
-// loadLocalIcon loads an icon from local file path
-// Supports multiple formats: PNG, JPEG, WebP, BMP, ICO
-func loadLocalIcon(path string) (image.Image, error) {
-	data, err := os.ReadFile(path)
-	if err != nil {
-		return nil, fmt.Errorf("file not found: %s", path)
-	}
-
-	// Detect format using magic bytes
-	format := detectFormat(data)
-
-	// For ICO format, use custom decoder
-	if format == FormatICO {
-		img, err := decodeICO(data)
-		if err != nil {
-			return nil, fmt.Errorf("failed to decode ICO image: %w", err)
-		}
-		return img, nil
-	}
-
-	// For other formats (PNG, JPEG, WebP, BMP), use standard image.Decode
-	// The decoders are registered via imports at the top of this file
-	if format == FormatUnknown {
-		return nil, fmt.Errorf("unsupported image format: detected %s", format)
-	}
-
-	img, _, err := image.Decode(bytes.NewReader(data))
-	if err != nil {
-		return nil, fmt.Errorf("failed to decode %s image: %w", format, err)
-	}
-
-	return img, nil
-}
-
-// downloadIcon downloads an icon from URL
-// Supports multiple formats: PNG, JPEG, WebP, BMP, ICO
-func downloadIcon(url string) (image.Image, error) {
-	client := &http.Client{
-		Timeout: 60 * time.Second,
-	}
-
-	resp, err := client.Get(url)
-	if err != nil {
-		return nil, err
-	}
-	defer resp.Body.Close()
-
-	if resp.StatusCode != http.StatusOK {
-		return nil, fmt.Errorf("failed to download icon: status %d", resp.StatusCode)
-	}
-
-	// Read the body
-	body, err := io.ReadAll(resp.Body)
-	if err != nil {
-		return nil, err
-	}
-
-	// Detect format using magic bytes
-	format := detectFormat(body)
-
-	// For ICO format, use custom decoder
-	if format == FormatICO {
-		img, err := decodeICO(body)
-		if err != nil {
-			return nil, fmt.Errorf("failed to decode ICO image: %w", err)
-		}
-		return img, nil
-	}
-
-	// For other formats (PNG, JPEG, WebP, BMP), use standard image.Decode
-	if format == FormatUnknown {
-		return nil, fmt.Errorf("unsupported image format: detected %s", format)
-	}
-
-	img, _, err := image.Decode(bytes.NewReader(body))
-	if err != nil {
-		return nil, fmt.Errorf("failed to decode %s image: %w", format, err)
 	}
 
 	return img, nil
@@ -295,10 +178,7 @@ func squareImage(src image.Image) image.Image {
 	}
 
 	// Determine the size of the square (use the larger dimension)
-	size := srcWidth
-	if srcHeight > srcWidth {
-		size = srcHeight
-	}
+	size := max(srcWidth, srcHeight)
 
 	// Create a new transparent square image
 	dst := image.NewRGBA(image.Rect(0, 0, size, size))

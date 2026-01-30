@@ -140,8 +140,14 @@ func (g *Generator) generateFromTemplates(appDir string, data *TemplateData) err
 		return fmt.Errorf("failed to write UI config: %w", err)
 	}
 
-	// Generate empty cmd scripts
-	cmdScripts := []string{"install_init", "install_callback", "uninstall_init", "uninstall_callback",
+	// Generate install_callback with CGI symlink support
+	installCallbackPath := filepath.Join(appDir, "cmd", "install_callback")
+	if err := g.templateEngine.RenderToFile("cmd_install_callback.tmpl", installCallbackPath, data, 0755); err != nil {
+		return fmt.Errorf("failed to generate cmd/install_callback: %w", err)
+	}
+
+	// Generate other empty cmd scripts
+	cmdScripts := []string{"install_init", "uninstall_init", "uninstall_callback",
 		"upgrade_init", "upgrade_callback", "config_init", "config_callback"}
 	for _, script := range cmdScripts {
 		filePath := filepath.Join(appDir, "cmd", script)
@@ -173,7 +179,7 @@ func (g *Generator) extractConfig(container *dockercontainer.InspectResponse) *A
 	sanitizedName := sanitizeAppName(name)
 	appName := getLabel(labels, "watchcow.appname", fmt.Sprintf("watchcow.%s", sanitizedName))
 
-	defaultIcon := getLabel(labels, "watchcow.icon", buildIconURLFromImage(container.Config.Image))
+	defaultIcon := getLabel(labels, "watchcow.icon", buildIconURLFromImage(container.Config.Image)) // URL → URLIconSource
 	displayName := getLabel(labels, "watchcow.display_name", prettifyName(name))
 
 	config := &AppConfig{
@@ -201,7 +207,7 @@ func (g *Generator) extractConfig(container *dockercontainer.InspectResponse) *A
 	}
 
 	// Parse multi-entry configuration
-	config.Entries = parseEntries(labels, displayName, defaultIcon, config.Port)
+	config.Entries = ParseEntries(labels, displayName, defaultIcon, config.Port)
 
 	// If no entries configured, create a default entry for backward compatibility
 	if len(config.Entries) == 0 {
@@ -217,6 +223,7 @@ func (g *Generator) extractConfig(container *dockercontainer.InspectResponse) *A
 			FileTypes: nil,
 			NoDisplay: getLabel(labels, "watchcow.no_display", "false") == "true",
 			Control:   nil,
+			Redirect:  getLabel(labels, "watchcow.redirect", ""),
 		}}
 	}
 
@@ -416,6 +423,7 @@ var entryFields = map[string]bool{
 	"control.access_perm": true,
 	"control.port_perm":   true,
 	"control.path_perm":   true,
+	"redirect":            true,
 }
 
 // isEntryField checks if a field name is an entry configuration field
@@ -506,11 +514,12 @@ func parseEntry(labels map[string]string, name string, displayName string, defau
 		FileTypes: fileTypes,
 		NoDisplay: getLabel(labels, prefix+"no_display", "false") == "true",
 		Control:   control,
+		Redirect:  getLabel(labels, prefix+"redirect", ""),
 	}
 }
 
-// parseEntries extracts all entries from container labels
-func parseEntries(labels map[string]string, displayName string, defaultIcon string, defaultPort string) []Entry {
+// ParseEntries extracts all entries from container labels
+func ParseEntries(labels map[string]string, displayName string, defaultIcon string, defaultPort string) []Entry {
 	entries := []Entry{}
 	entryNames := make(map[string]bool)
 
@@ -542,6 +551,10 @@ func parseEntries(labels map[string]string, displayName string, defaultIcon stri
 	// Parse named entries
 	for name := range entryNames {
 		entry := parseEntry(labels, name, displayName, defaultIcon)
+		// Use container's first port as fallback if not specified
+		if entry.Port == "" {
+			entry.Port = defaultPort
+		}
 		entries = append(entries, entry)
 	}
 
