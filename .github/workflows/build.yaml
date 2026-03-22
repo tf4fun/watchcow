@@ -14,6 +14,15 @@ on:
 jobs:
   build:
     runs-on: ubuntu-latest
+    strategy:
+      matrix:
+        include:
+          - goarch: amd64
+            platform: x86
+            suffix: x86
+          - goarch: arm64
+            platform: arm
+            suffix: arm
     steps:
       - name: Checkout
         uses: actions/checkout@v4
@@ -29,11 +38,18 @@ jobs:
           VERSION=${GITHUB_REF#refs/tags/v}
           sed -i "s/^version.*=.*/version      = ${VERSION}/" fnos-app/manifest
           echo "Updated manifest version to ${VERSION}"
+
+      - name: Set manifest platform
+        run: |
+          if [ "${{ matrix.platform }}" = "arm" ]; then
+            sed -i '/^arch.*=.*/d' fnos-app/manifest
+          fi
+          sed -i "s/^platform.*=.*/platform        = ${{ matrix.platform }}/" fnos-app/manifest
           cat fnos-app/manifest
 
       - name: Build binary
         run: |
-          CGO_ENABLED=0 GOOS=linux GOARCH=amd64 go build -trimpath -ldflags "-s -w" -o fnos-app/app/watchcow ./cmd/watchcow
+          CGO_ENABLED=0 GOOS=linux GOARCH=${{ matrix.goarch }} go build -trimpath -ldflags "-s -w" -o fnos-app/app/watchcow ./cmd/watchcow
           chmod +x fnos-app/app/watchcow
           chmod +x fnos-app/cmd/*
 
@@ -46,13 +62,13 @@ jobs:
         run: |
           cd fnos-app
           /tmp/fnpack build
-          mv watchcow.fpk ../
+          mv watchcow.fpk ../watchcow-${{ matrix.suffix }}.fpk
 
       - name: Upload artifact
         uses: actions/upload-artifact@v4
         with:
-          name: watchcow-package
-          path: watchcow.fpk
+          name: watchcow-${{ matrix.suffix }}-package
+          path: watchcow-${{ matrix.suffix }}.fpk
 
   release:
     needs: build
@@ -61,13 +77,15 @@ jobs:
     permissions:
       contents: write
     steps:
-      - name: Download artifact
+      - name: Download artifacts
         uses: actions/download-artifact@v4
         with:
-          name: watchcow-package
+          merge-multiple: true
 
       - name: Create Release
         uses: softprops/action-gh-release@v1
         with:
-          files: watchcow.fpk
+          files: |
+            watchcow-x86.fpk
+            watchcow-arm.fpk
           generate_release_notes: true

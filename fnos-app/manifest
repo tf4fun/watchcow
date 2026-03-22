@@ -3,6 +3,7 @@ version         = 1.0.0
 display_name    = WatchCow
 desc            = <b>🐄 Docker 容器一键转 fnOS 应用</b><br><br>监控 Docker 事件，自动将容器转换为 fnOS 原生应用。<br><br><b>✨ 功能</b>：自动发现 · 自动安装 · 生命周期同步 · 图标智能处理<br><br><b>🤖 AI 助手</b><br>不熟悉配置？试试 <a href="https://www.doubao.com/bot/vW5CFHu6">WatchCow 小助手</a>，帮助将 Docker Compose 转换为 WatchCow 格式<br><br><b>🏷️ 容器 Labels 配置</b><br>• <code>watchcow.enable</code> - 启用（必需）<br>• <code>watchcow.display_name</code> - 显示名称<br>• <code>watchcow.desc</code> - 描述<br>• <code>watchcow.service_port</code> - 端口<br>• <code>watchcow.protocol</code> - 协议(http/https)<br>• <code>watchcow.icon</code> - 图标URL或file://路径<br>• <code>watchcow.ui_type</code> - url/iframe<br>• <code>watchcow.all_users</code> - 访问权限<br>• <code>watchcow.redirect</code> - 外部跳转URL<br><br>⚠️ 运行于 Root 权限 | 📖 <a href="https://github.com/tf4fun/watchcow">完整文档</a>
 arch            = x86_64
+platform        = x86
 source          = thirdparty
 maintainer      = tf4fun
 maintainer_url  = https://github.com/tf4fun
