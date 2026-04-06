@@ -258,7 +258,20 @@ func (m *Monitor) processContainerStart(ctx context.Context, op *AppOperation) {
 
 	// Check if already installed in fnOS
 	if m.installer != nil && m.installer.IsAppInstalled(appName) {
-		// Already installed, update state and start it
+		// Already installed, transfer ownership to this new container.
+		// Clear the app association from any previous container so that when the
+		// old container is later destroyed it does not uninstall the live app.
+		m.containers.Range(func(k, val any) bool {
+			if k.(string) == op.ContainerID {
+				return true
+			}
+			other := val.(*ContainerState)
+			if other.AppName == appName {
+				other.AppName = ""
+				other.Installed = false
+			}
+			return true
+		})
 		slog.Info("App already installed, starting", "app", appName)
 		if v, ok := m.containers.Load(op.ContainerID); ok {
 			state := v.(*ContainerState)
