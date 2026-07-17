@@ -224,6 +224,7 @@ func (g *Generator) extractConfig(container *dockercontainer.InspectResponse) *A
 			NoDisplay: getLabel(labels, "watchcow.no_display", "false") == "true",
 			Control:   nil,
 			Redirect:  getLabel(labels, "watchcow.redirect", ""),
+			ForceExternal: getLabel(labels, "watchcow.redirect_force_external", "false") == "true",
 		}}
 	}
 
@@ -398,41 +399,43 @@ func prettifyName(name string) string {
 
 // entryFields defines which label suffixes are entry-specific configuration fields
 var entryFields = map[string]bool{
-	"service_port":        true,
-	"protocol":            true,
-	"path":                true,
-	"ui_type":             true,
-	"all_users":           true,
-	"icon":                true,
-	"title":               true,
-	"file_types":          true,
-	"no_display":          true,
-	"control.access_perm": true,
-	"control.port_perm":   true,
-	"control.path_perm":   true,
-	"redirect":            true,
+	"service_port":          true,
+	"protocol":              true,
+	"path":                  true,
+	"ui_type":               true,
+	"all_users":             true,
+	"icon":                  true,
+	"title":                 true,
+	"file_types":            true,
+	"no_display":            true,
+	"control.access_perm":   true,
+	"control.port_perm":     true,
+	"control.path_perm":     true,
+	"redirect":              true,
+	"redirect_force_external": true,
 }
 
 var reservedEntryNames = map[string]bool{
-	"enable":         true,
-	"install":        true,
-	"install_volume": true,
-	"appname":        true,
-	"display_name":   true,
-	"desc":           true,
-	"version":        true,
-	"maintainer":     true,
-	"service_port":   true,
-	"protocol":       true,
-	"path":           true,
-	"ui_type":        true,
-	"all_users":      true,
-	"icon":           true,
-	"title":          true,
-	"file_types":     true,
-	"no_display":     true,
-	"control":        true,
-	"redirect":       true,
+	"enable":                  true,
+	"install":                 true,
+	"install_volume":          true,
+	"appname":                 true,
+	"display_name":            true,
+	"desc":                    true,
+	"version":                 true,
+	"maintainer":              true,
+	"service_port":            true,
+	"protocol":                true,
+	"path":                    true,
+	"ui_type":                 true,
+	"all_users":               true,
+	"icon":                    true,
+	"title":                   true,
+	"file_types":              true,
+	"no_display":              true,
+	"control":                 true,
+	"redirect":                true,
+	"redirect_force_external": true,
 }
 
 // isEntryField checks if a field name is an entry configuration field
@@ -542,6 +545,7 @@ func parseEntry(labels map[string]string, name string, displayName string, defau
 		NoDisplay: getLabel(labels, prefix+"no_display", "false") == "true",
 		Control:   control,
 		Redirect:  getLabel(labels, prefix+"redirect", ""),
+		ForceExternal: getLabel(labels, prefix+"redirect_force_external", "false") == "true",
 	}
 }
 

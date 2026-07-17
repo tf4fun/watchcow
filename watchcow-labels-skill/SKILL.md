@@ -54,6 +54,7 @@ These control how the app appears and opens in fnOS:
 | `watchcow.protocol` | `http` | `http` or `https` |
 | `watchcow.path` | `/` | URL path |
 | `watchcow.redirect` | — | External URL; when set, port/protocol/path are ignored and the app opens this URL directly |
+| `watchcow.redirect_force_external` | `false` | `"true"` skips local network detection and always redirects to the external URL (useful for apps like Vaultwarden that require HTTPS via domain) |
 | `watchcow.ui_type` | `url` | `url` (new browser tab) or `iframe` (desktop window) |
 | `watchcow.all_users` | `true` | `"true"` = all users, `"false"` = admin only |
 | `watchcow.title` | same as `display_name` | Entry title |
@@ -79,6 +80,7 @@ watchcow.<entry>.service_port
 watchcow.<entry>.protocol
 watchcow.<entry>.path
 watchcow.<entry>.redirect
+watchcow.<entry>.redirect_force_external
 watchcow.<entry>.ui_type
 watchcow.<entry>.all_users
 watchcow.<entry>.title          # defaults to "<display_name> - <entry>"

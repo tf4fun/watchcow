@@ -31,7 +31,7 @@ WatchCow 监控 Docker 容器事件，自动将带有 `watchcow.enable=true` 标
 - **灵活配置** - 通过 Docker labels 自定义应用信息
 - **图标支持** - 支持 HTTP URL 或本地文件 (`file://...`) 作为图标，自动转换多种格式
 - **Dashboard** - 内置应用管理面板，可通过应用商店打开，查看和管理所有 WatchCow 应用
-- **URL 重定向** - 支持 `watchcow.redirect` 配置外部链接跳转
+- **URL 重定向** - 支持 `watchcow.redirect` 配置外部链接跳转，支持 `watchcow.redirect_force_external` 强制走外部地址
 
 ![Dashboard](README.assets/dashboard.png)
 
@@ -122,6 +122,7 @@ services:
 | `watchcow.protocol` | 否 | `http` | 协议 (`http`/`https`) |
 | `watchcow.path` | 否 | `/` | URL 路径 |
 | `watchcow.redirect` | 否 | - | 外部跳转 URL，设置后忽略 port/protocol/path，直接跳转到指定地址 |
+| `watchcow.redirect_force_external` | 否 | `false` | 设为 `true` 时跳过内网检测，始终跳转到外部地址（适用于 Vaultwarden 等必须通过域名 HTTPS 访问的应用） |
 | `watchcow.ui_type` | 否 | `url` | UI 类型 (`url` 新标签页 / `iframe` 桌面窗口) |
 | `watchcow.all_users` | 否 | `true` | 访问权限 (`true` 所有用户 / `false` 仅管理员) |
 | `watchcow.title` | 否 | `display_name` | 入口标题 |
@@ -142,6 +143,7 @@ WatchCow 支持为单个应用配置多个入口。使用 `watchcow.<entry>.<fie
 | `watchcow.<entry>.protocol` | 入口协议 |
 | `watchcow.<entry>.path` | 入口路径 |
 | `watchcow.<entry>.redirect` | 外部跳转 URL |
+| `watchcow.<entry>.redirect_force_external` | 设为 `true` 时跳过内网检测，始终跳转到外部地址 |
 | `watchcow.<entry>.ui_type` | 入口 UI 类型 |
 | `watchcow.<entry>.all_users` | 入口访问权限 |
 | `watchcow.<entry>.title` | 入口标题（默认：`display_name - entry`） |

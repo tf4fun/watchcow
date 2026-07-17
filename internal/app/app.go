@@ -69,6 +69,7 @@ type Entry struct {
 	NoDisplay bool          // Hide from desktop (only show in right-click menu)
 	Control   *EntryControl // Permission control settings
 	Redirect  string        // External redirect host for CGI mode
+	ForceExternal bool      // Skip local network detection, always redirect to external URL
 }
 
 // GetRedirectConfig returns RedirectConfig if redirect is enabled, nil otherwise

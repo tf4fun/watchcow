@@ -84,6 +84,8 @@ type redirectTemplateData struct {
 	// Request components
 	Path        string // path from request
 	QueryString string // query string from request
+	// Behavior
+	ForceExternal bool // skip local network detection, always redirect to external URL
 	// Assets
 	BulmaCSS template.CSS // Bulma CSS content
 }
@@ -134,7 +136,7 @@ func (h *RedirectHandler) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	h.outputHTML(w, entry.Redirect, entry.Port, path, sanitizeQueryString(r.URL.RawQuery))
+	h.outputHTML(w, entry.Redirect, entry.Port, path, sanitizeQueryString(r.URL.RawQuery), entry.ForceExternal)
 }
 
 // outputError outputs an error page
@@ -145,7 +147,7 @@ func (h *RedirectHandler) outputError(w http.ResponseWriter, status int, msg str
 }
 
 // outputHTML outputs the redirect HTML page with JavaScript
-func (h *RedirectHandler) outputHTML(w http.ResponseWriter, redirectHost, containerPort, path, queryString string) {
+func (h *RedirectHandler) outputHTML(w http.ResponseWriter, redirectHost, containerPort, path, queryString string, forceExternal bool) {
 	w.Header().Set("Content-Type", "text/html; charset=utf-8")
 	w.WriteHeader(http.StatusOK)
 
@@ -183,6 +185,7 @@ func (h *RedirectHandler) outputHTML(w http.ResponseWriter, redirectHost, contai
 		ContainerPort: containerPort,
 		Path:          path,
 		QueryString:   queryString,
+		ForceExternal: forceExternal,
 		BulmaCSS:      template.CSS(cssBytes),
 	}
 

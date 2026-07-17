@@ -182,17 +182,18 @@ func (s *DashboardStorage) GetByKey(key string) *docker.StoredConfig {
 
 	for _, e := range cfg.Entries {
 		result.Entries = append(result.Entries, docker.StoredEntry{
-			Name:       e.Name,
-			Title:      e.Title,
-			Protocol:   e.Protocol,
-			Port:       e.Port,
-			Path:       e.Path,
-			UIType:     e.UIType,
-			AllUsers:   e.AllUsers,
-			FileTypes:  e.FileTypes,
-			NoDisplay:  e.NoDisplay,
-			Redirect:   e.Redirect,
-			IconBase64: e.IconBase64,
+			Name:          e.Name,
+			Title:         e.Title,
+			Protocol:      e.Protocol,
+			Port:          e.Port,
+			Path:          e.Path,
+			UIType:        e.UIType,
+			AllUsers:      e.AllUsers,
+			FileTypes:     e.FileTypes,
+			NoDisplay:     e.NoDisplay,
+			Redirect:      e.Redirect,
+			ForceExternal: e.ForceExternal,
+			IconBase64:    e.IconBase64,
 		})
 	}
 

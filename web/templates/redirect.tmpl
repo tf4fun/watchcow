@@ -43,6 +43,8 @@
         // Request components
         const PATH = '{{.Path | js}}';                    // e.g., "/path2" (sanitized)
         const QUERY_STRING = '{{.QueryString | js}}';     // e.g., "y=2" (sanitized)
+        // Behavior
+        const FORCE_EXTERNAL = {{.ForceExternal}};        // skip local network detection
 
         const statusEl = document.getElementById('status');
         const errorEl = document.getElementById('error');
@@ -187,6 +189,13 @@
 
         // Main logic
         async function main() {
+            // If force external is enabled, skip local network detection entirely
+            if (FORCE_EXTERNAL) {
+                setStatus('Force external detected, skipping local network detection...');
+                redirectTo(buildExternalURL());
+                return;
+            }
+
             // First, quick check based on hostname
             if (isLocalHostname()) {
                 setStatus('Local network detected, verifying access...');

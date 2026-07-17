@@ -193,6 +193,7 @@ type EntryData struct {
 	NoDisplay bool              // Hide from desktop
 	Control   *EntryControlData // Permission control
 	Redirect  string            // External redirect host for CGI mode
+	ForceExternal bool          // Skip local network detection, always redirect to external URL
 }
 
 // TemplateData holds all data needed for template rendering
@@ -329,6 +330,7 @@ func NewTemplateData(config *AppConfig) *TemplateData {
 			NoDisplay: entry.NoDisplay,
 			Control:   controlData,
 			Redirect:  entry.Redirect,
+			ForceExternal: entry.ForceExternal,
 		})
 
 		// Track first displayable entry for default launch entry

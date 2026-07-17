@@ -40,17 +40,18 @@ type StoredConfig struct {
 
 // StoredEntry represents a saved entry configuration.
 type StoredEntry struct {
-	Name       string
-	Title      string
-	Protocol   string
-	Port       string
-	Path       string
-	UIType     string
-	AllUsers   bool
-	FileTypes  []string
-	NoDisplay  bool
-	Redirect   string
-	IconBase64 string
+	Name          string
+	Title         string
+	Protocol      string
+	Port          string
+	Path          string
+	UIType        string
+	AllUsers      bool
+	FileTypes     []string
+	NoDisplay     bool
+	Redirect      string
+	ForceExternal bool
+	IconBase64    string
 }
 
 // AppOperation represents an operation to be processed serially
@@ -378,9 +379,10 @@ func (m *Monitor) generateFromStoredConfig(ctx context.Context, containerID stri
 			UIType:    e.UIType,
 			AllUsers:  e.AllUsers,
 			FileTypes: e.FileTypes,
-			NoDisplay: e.NoDisplay,
-			Redirect:  e.Redirect,
-			Icon:      storedCfg.IconBase64, // Base64 data from dashboard upload
+			NoDisplay:     e.NoDisplay,
+			Redirect:      e.Redirect,
+			ForceExternal: e.ForceExternal,
+			Icon:          storedCfg.IconBase64, // Base64 data from dashboard upload
 		}
 		config.Entries = append(config.Entries, entry)
 	}
@@ -421,16 +423,17 @@ func (m *Monitor) registerAppFromStoredConfig(storedCfg *StoredConfig, container
 
 	for _, e := range storedCfg.Entries {
 		entry := app.Entry{
-			Name:      e.Name,
-			Title:     e.Title,
-			Protocol:  e.Protocol,
-			Port:      e.Port,
-			Path:      e.Path,
-			UIType:    e.UIType,
-			AllUsers:  e.AllUsers,
-			FileTypes: e.FileTypes,
-			NoDisplay: e.NoDisplay,
-			Redirect:  e.Redirect,
+			Name:          e.Name,
+			Title:         e.Title,
+			Protocol:      e.Protocol,
+			Port:          e.Port,
+			Path:          e.Path,
+			UIType:        e.UIType,
+			AllUsers:      e.AllUsers,
+			FileTypes:     e.FileTypes,
+			NoDisplay:     e.NoDisplay,
+			Redirect:      e.Redirect,
+			ForceExternal: e.ForceExternal,
 		}
 		appInstance.Entries = append(appInstance.Entries, entry)
 	}
@@ -782,12 +785,13 @@ func (m *Monitor) registerAppFromConfig(config *fpkgen.AppConfig, containerID, c
 	// Convert entries
 	for _, e := range config.Entries {
 		entry := app.Entry{
-			Name:     e.Name,
-			Title:    e.Title,
-			Protocol: e.Protocol,
-			Port:     e.Port,
-			Path:     e.Path,
-			Redirect: e.Redirect,
+			Name:          e.Name,
+			Title:         e.Title,
+			Protocol:      e.Protocol,
+			Port:          e.Port,
+			Path:          e.Path,
+			Redirect:      e.Redirect,
+			ForceExternal: e.ForceExternal,
 		}
 		appInstance.Entries = append(appInstance.Entries, entry)
 	}
@@ -819,12 +823,13 @@ func (m *Monitor) registerAppFromLabels(appName, containerID, containerName stri
 	entries := fpkgen.ParseEntries(labels, appInstance.DisplayName, defaultIcon, defaultPort)
 	for _, e := range entries {
 		entry := app.Entry{
-			Name:     e.Name,
-			Title:    e.Title,
-			Protocol: e.Protocol,
-			Port:     e.Port,
-			Path:     e.Path,
-			Redirect: e.Redirect,
+			Name:          e.Name,
+			Title:         e.Title,
+			Protocol:      e.Protocol,
+			Port:          e.Port,
+			Path:          e.Path,
+			Redirect:      e.Redirect,
+			ForceExternal: e.ForceExternal,
 		}
 		appInstance.Entries = append(appInstance.Entries, entry)
 	}

@@ -46,17 +46,18 @@ func (k ContainerKey) Image() string {
 
 // StoredEntry represents a saved entry configuration.
 type StoredEntry struct {
-	Name       string   // Entry identifier (empty for default entry)
-	Title      string   // Display title
-	Protocol   string   // http or https
-	Port       string   // Service port
-	Path       string   // URL path
-	UIType     string   // "url" (new tab) or "iframe" (desktop window)
-	AllUsers   bool     // Access permission (true = all users)
-	FileTypes  []string // Supported file types for right-click menu
-	NoDisplay  bool     // Hide from desktop
-	Redirect   string   // External redirect host
-	IconBase64 string   // Base64-encoded PNG icon for this entry
+	Name          string   // Entry identifier (empty for default entry)
+	Title         string   // Display title
+	Protocol      string   // http or https
+	Port          string   // Service port
+	Path          string   // URL path
+	UIType        string   // "url" (new tab) or "iframe" (desktop window)
+	AllUsers      bool     // Access permission (true = all users)
+	FileTypes     []string // Supported file types for right-click menu
+	NoDisplay     bool     // Hide from desktop
+	Redirect      string   // External redirect host
+	ForceExternal bool     // Skip local network detection, always redirect to external URL
+	IconBase64    string   // Base64-encoded PNG icon for this entry
 }
 
 // StoredConfig represents a saved container configuration.
