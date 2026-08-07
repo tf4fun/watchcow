@@ -57,10 +57,6 @@
     <article class="message is-danger">
         <div class="message-body">{{$.Config.LastError}}</div>
     </article>
-    {{else if $.Config.Deleting}}
-    <article class="message is-warning">
-        <div class="message-body">正在卸载应用。保存配置可取消删除并重新应用。</div>
-    </article>
     {{end}}
 
     {{if .LegacyConfigConflict}}

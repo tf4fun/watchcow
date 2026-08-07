@@ -256,6 +256,92 @@ func TestDashboardHandler_ContainerListUsesSingleAppliedConfigAction(t *testing.
 	}
 }
 
+func TestDashboardHandler_BlocksActiveConfigOperations(t *testing.T) {
+	for _, test := range []struct {
+		name       string
+		statusText string
+		config     StoredConfig
+	}{
+		{name: "apply", statusText: "应用中", config: StoredConfig{Pending: true}},
+		{name: "delete", statusText: "删除中", config: StoredConfig{Deleting: true}},
+	} {
+		t.Run(test.name, func(t *testing.T) {
+			handler, storage, trigger := setupTestHandler(t)
+			key := ContainerKey("nginx:alpine|80:8080")
+			test.config.Key = key
+			test.config.AppName = "watchcow.nginx"
+			if err := storage.Set(&test.config); err != nil {
+				t.Fatal(err)
+			}
+
+			listReq := httptest.NewRequest(http.MethodGet, "/containers", nil)
+			listW := httptest.NewRecorder()
+			handler.handleContainerList(listW, listReq)
+			listBody := listW.Body.String()
+			if listW.Code != http.StatusOK || !strings.Contains(listBody, test.statusText) ||
+				strings.Contains(listBody, `hx-get="containers/abc123"`) {
+				t.Fatalf("active operation remained editable: status=%d body=%s", listW.Code, listBody)
+			}
+
+			formReq := httptest.NewRequest(http.MethodGet, "/containers/abc123", nil)
+			formReq = setChiURLParam(formReq, "id", "abc123")
+			formW := httptest.NewRecorder()
+			handler.handleContainerForm(formW, formReq)
+			if formW.Code != http.StatusOK || !strings.Contains(formW.Body.String(), `class="container-view"`) ||
+				strings.Contains(formW.Body.String(), "<form") {
+				t.Fatalf("active operation opened a stale form: status=%d body=%s", formW.Code, formW.Body.String())
+			}
+
+			saveReq := httptest.NewRequest(http.MethodPost, "/containers/abc123", nil)
+			saveReq = setChiURLParam(saveReq, "id", "abc123")
+			saveW := httptest.NewRecorder()
+			handler.handleContainerSave(saveW, saveReq)
+			if saveW.Code != http.StatusConflict || len(trigger.triggerCalls) != 0 {
+				t.Fatalf("active operation accepted save: status=%d calls=%d", saveW.Code, len(trigger.triggerCalls))
+			}
+
+			deleteReq := httptest.NewRequest(http.MethodDelete, "/containers/abc123", nil)
+			deleteReq = setChiURLParam(deleteReq, "id", "abc123")
+			deleteW := httptest.NewRecorder()
+			handler.handleContainerDelete(deleteW, deleteReq)
+			if deleteW.Code != http.StatusConflict || len(trigger.uninstallCalls) != 0 {
+				t.Fatalf("active operation accepted delete: status=%d calls=%d", deleteW.Code, len(trigger.uninstallCalls))
+			}
+		})
+	}
+}
+
+func TestDashboardHandler_NonActiveConfigStatesRemainEditable(t *testing.T) {
+	for _, test := range []struct {
+		name   string
+		state  string
+		config StoredConfig
+	}{
+		{name: "waiting for stopped container", state: "exited", config: StoredConfig{Pending: true}},
+		{name: "failed apply", state: "running", config: StoredConfig{Pending: true, LastError: "install failed"}},
+		{name: "failed delete", state: "running", config: StoredConfig{Deleting: true, LastError: "uninstall failed"}},
+	} {
+		t.Run(test.name, func(t *testing.T) {
+			handler, storage, _ := setupTestHandler(t)
+			handler.lister.(*mockContainerLister).containers[0].State = test.state
+			key := ContainerKey("nginx:alpine|80:8080")
+			test.config.Key = key
+			test.config.AppName = "watchcow.nginx"
+			if err := storage.Set(&test.config); err != nil {
+				t.Fatal(err)
+			}
+
+			req := httptest.NewRequest(http.MethodGet, "/containers/abc123", nil)
+			req = setChiURLParam(req, "id", "abc123")
+			w := httptest.NewRecorder()
+			handler.handleContainerForm(w, req)
+			if w.Code != http.StatusOK || !strings.Contains(w.Body.String(), "<form") {
+				t.Fatalf("non-active config state was not editable: status=%d body=%s", w.Code, w.Body.String())
+			}
+		})
+	}
+}
+
 func TestDashboardHandler_ContainerListShowsBlockedConfig(t *testing.T) {
 	handler, storage, _ := setupTestHandler(t)
 	key := ContainerKey("nginx:alpine|80:8080")
@@ -934,6 +1020,9 @@ func TestDashboardHandler_ContainerSaveAllowsRedirectWithoutPort(t *testing.T) {
 	if len(trigger.triggerCalls) != 1 {
 		t.Fatalf("redirect-only save triggered %d installs, want 1", len(trigger.triggerCalls))
 	}
+	if err := storage.MarkApplied(string(saved.Key), saved.Revision); err != nil {
+		t.Fatal(err)
+	}
 
 	formReq := httptest.NewRequest(http.MethodGet, "/containers/abc123", nil)
 	formReq = setChiURLParam(formReq, "id", "abc123")
@@ -1114,58 +1203,38 @@ func TestDashboardHandler_ContainerSaveNoContentChangeDoesNotReinstall(t *testin
 	}
 }
 
-func TestDashboardHandler_UnchangedSaveRetriesFailedOrDeletingConfig(t *testing.T) {
-	for _, test := range []struct {
-		name   string
-		mutate func(*DashboardStorage, ContainerKey, string) error
-	}{
-		{
-			name: "failed apply",
-			mutate: func(storage *DashboardStorage, key ContainerKey, revision string) error {
-				return storage.MarkFailed(string(key), revision, "install failed")
-			},
-		},
-		{
-			name: "cancel delete",
-			mutate: func(storage *DashboardStorage, key ContainerKey, _ string) error {
-				return storage.MarkDeleting([]ContainerKey{key})
-			},
-		},
-	} {
-		t.Run(test.name, func(t *testing.T) {
-			handler, storage, trigger := setupTestHandler(t)
-			key := ContainerKey("nginx:alpine|80:8080")
-			form := url.Values{
-				"display_name": {"Nginx"}, "description": {"nginx:alpine"},
-				"version": {"1.0.0"}, "maintainer": {"WatchCow"},
-				"entry_protocol": {"http"}, "entry_port": {"8080"},
-				"entry_path": {"/"}, "entry_ui_type": {"url"}, "entry_all_users": {"true"},
-			}
-			save := func() *httptest.ResponseRecorder {
-				req := httptest.NewRequest(http.MethodPost, "/containers/abc123", strings.NewReader(form.Encode()))
-				req.Header.Set("Content-Type", "application/x-www-form-urlencoded")
-				req = setChiURLParam(req, "id", "abc123")
-				w := httptest.NewRecorder()
-				handler.handleContainerSave(w, req)
-				return w
-			}
+func TestDashboardHandler_UnchangedSaveRetriesFailedConfig(t *testing.T) {
+	handler, storage, trigger := setupTestHandler(t)
+	key := ContainerKey("nginx:alpine|80:8080")
+	form := url.Values{
+		"display_name": {"Nginx"}, "description": {"nginx:alpine"},
+		"version": {"1.0.0"}, "maintainer": {"WatchCow"},
+		"entry_protocol": {"http"}, "entry_port": {"8080"},
+		"entry_path": {"/"}, "entry_ui_type": {"url"}, "entry_all_users": {"true"},
+	}
+	save := func() *httptest.ResponseRecorder {
+		req := httptest.NewRequest(http.MethodPost, "/containers/abc123", strings.NewReader(form.Encode()))
+		req.Header.Set("Content-Type", "application/x-www-form-urlencoded")
+		req = setChiURLParam(req, "id", "abc123")
+		w := httptest.NewRecorder()
+		handler.handleContainerSave(w, req)
+		return w
+	}
 
-			if w := save(); w.Code != http.StatusOK {
-				t.Fatalf("initial save status = %d: %s", w.Code, w.Body.String())
-			}
-			current := storage.Get(key)
-			if err := test.mutate(storage, key, current.Revision); err != nil {
-				t.Fatal(err)
-			}
-			trigger.triggerCalls = nil
-			if w := save(); w.Code != http.StatusOK {
-				t.Fatalf("retry save status = %d: %s", w.Code, w.Body.String())
-			}
-			got := storage.Get(key)
-			if len(trigger.triggerCalls) != 1 || !got.Pending || got.Deleting || got.LastError != "" {
-				t.Fatalf("retry was not scheduled: calls=%d config=%+v", len(trigger.triggerCalls), got)
-			}
-		})
+	if w := save(); w.Code != http.StatusOK {
+		t.Fatalf("initial save status = %d: %s", w.Code, w.Body.String())
+	}
+	current := storage.Get(key)
+	if err := storage.MarkFailed(string(key), current.Revision, "install failed"); err != nil {
+		t.Fatal(err)
+	}
+	trigger.triggerCalls = nil
+	if w := save(); w.Code != http.StatusOK {
+		t.Fatalf("retry save status = %d: %s", w.Code, w.Body.String())
+	}
+	got := storage.Get(key)
+	if len(trigger.triggerCalls) != 1 || !got.Pending || got.Deleting || got.LastError != "" {
+		t.Fatalf("retry was not scheduled: calls=%d config=%+v", len(trigger.triggerCalls), got)
 	}
 }
 

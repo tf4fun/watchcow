@@ -69,8 +69,13 @@
                                 处理冲突
                             </button>
                         {{else if .HasStoredConfig}}
+                            {{if and .Config.Deleting (not .Config.LastError)}}
+                            <span class="status-chip is-pending">删除中</span>
+                            {{else if and .Config.Pending (not .Config.LastError) (eq .State "running")}}
+                            <span class="status-chip is-pending">应用中</span>
+                            {{else}}
                             <button class="button is-small configure-button
-                                    {{if .Config.Deleting}}{{if .Config.LastError}}is-state-danger{{else}}is-state-pending{{end}}
+                                    {{if .Config.Deleting}}is-state-danger
                                     {{else if .Config.Pending}}{{if .Config.LastError}}is-state-danger{{else}}is-state-pending{{end}}
                                     {{else if .Config.LastError}}is-state-danger
                                     {{else}}is-primary is-outlined{{end}}"
@@ -79,9 +84,9 @@
                                     hx-swap="innerHTML show:top"
                                     title="点击查看配置">
                                 {{if .Config.Deleting}}
-                                    {{if .Config.LastError}}删除失败{{else}}删除中{{end}}
+                                    删除失败
                                 {{else if .Config.Pending}}
-                                    {{if .Config.LastError}}应用失败{{else if eq .State "running"}}应用中{{else}}等待运行{{end}}
+                                    {{if .Config.LastError}}应用失败{{else}}等待运行{{end}}
                                 {{else if .Config.LastError}}
                                     待修复
                                 {{else}}
@@ -90,6 +95,7 @@
                             </button>
                             {{if .Config.LastError}}
                             <p class="status-detail" title="{{.Config.LastError}}">{{.Config.LastError}}</p>
+                            {{end}}
                             {{end}}
                         {{else}}
                             <button class="button is-small is-primary configure-button add-config-button"

@@ -353,6 +353,12 @@ func (h *DashboardHandler) handleContainerForm(w http.ResponseWriter, r *http.Re
 	}
 	// Get stored config or create default
 	config := h.storage.Get(container.ConfigKey)
+	if configOperationInProgress(container, config) {
+		// A stale list can race with an operation starting. Return the live list so
+		// HTMX keeps polling instead of opening an immediately stale form.
+		h.handleContainerList(w, r)
+		return
+	}
 	if config == nil {
 		// Create default config from container info
 		config = h.createDefaultConfig(container)
@@ -394,6 +400,10 @@ func (h *DashboardHandler) handleContainerSave(w http.ResponseWriter, r *http.Re
 	}
 	if container.LegacyConfigConflict && !container.HasStoredConfig {
 		h.renderError(w, http.StatusConflict, "检测到无法唯一归属的旧版配置，请停止或移除冲突容器后重试")
+		return
+	}
+	if configOperationInProgress(container, h.storage.Get(container.ConfigKey)) {
+		h.renderError(w, http.StatusConflict, "应用配置正在处理中，请稍后重试")
 		return
 	}
 
@@ -561,6 +571,10 @@ func (h *DashboardHandler) handleContainerDelete(w http.ResponseWriter, r *http.
 		h.renderError(w, http.StatusConflict, "旧版配置同时匹配多个容器，无法安全删除；请先停止或移除冲突容器")
 		return
 	}
+	if configOperationInProgress(container, h.storage.Get(container.ConfigKey)) {
+		h.renderError(w, http.StatusConflict, "应用配置正在处理中，请稍后重试")
+		return
+	}
 
 	deleteKeys := append([]ContainerKey{container.Key}, container.LegacyConfigKeys...)
 	appKeys := make(map[string]ContainerKey)
@@ -600,6 +614,18 @@ func (h *DashboardHandler) handleContainerDelete(w http.ResponseWriter, r *http.
 	<p>删除任务已提交。</p>
 	<button class="button is-small mt-2" hx-get="containers" hx-target="#main-content" hx-swap="innerHTML show:top">返回列表</button>
 </article>`))
+}
+
+func configOperationInProgress(container *ContainerInfo, config *StoredConfig) bool {
+	if container == nil || config == nil || config.LastError != "" {
+		return false
+	}
+	if config.Deleting {
+		return true
+	}
+	// A pending config for a stopped container has not entered the worker yet,
+	// so it remains editable while waiting for the container to start.
+	return config.Pending && container.State == "running"
 }
 
 // processIcon validates an uploaded image and returns base64 encoded data.
