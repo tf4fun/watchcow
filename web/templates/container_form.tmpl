@@ -166,14 +166,16 @@
                                    placeholder="8080"
                                    min="1" max="65535" required>
                             {{else}}
-                            <input type="hidden" name="entry_port" value="">
-                            <input class="input" type="text" value="无映射端口" disabled>
+                            <input class="input" type="number" name="entry_port" id="entry-port"
+                                   value="{{$entry.Port}}"
+                                   placeholder="8080"
+                                   min="1" max="65535">
                             {{end}}
                         </div>
                         {{if eq .NetworkMode "host"}}
                         <p class="help">host 网络模式，请输入容器监听的端口</p>
                         {{else if not .Ports}}
-                        <p class="help">请填写外部跳转地址</p>
+                        <p class="help">请输入 NAS 上可访问的端口，也可留空并仅使用外部跳转</p>
                         {{end}}
                     </div>
 
@@ -206,7 +208,6 @@
                             <input class="input" type="text" name="entry_redirect" id="entry-redirect"
                                    value="{{$entry.Redirect}}"
                                    placeholder="https://example.com"
-                                   {{if and (not .Ports) (ne .NetworkMode "host")}}required{{end}}
                                    oninput="syncPortRequirement()">
                         </div>
                         <p class="help">远程访问时使用的 HTTP(S) 地址</p>

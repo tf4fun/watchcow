@@ -359,8 +359,8 @@ func TestDashboardHandler_ContainerListShowsBlockedConfig(t *testing.T) {
 	}
 }
 
-func TestDashboardHandler_NoPortContainerOffersRedirectOnlyConfiguration(t *testing.T) {
-	handler, _, _ := setupTestHandler(t)
+func TestDashboardHandler_NoPortContainerAcceptsManualPortOrRedirect(t *testing.T) {
+	handler, storage, trigger := setupTestHandler(t)
 	handler.lister = &mockContainerLister{containers: []docker.ContainerInfo{{
 		ID: "worker", Name: "worker", Image: "worker:latest", State: "running",
 		IdentityPorts: map[string]string{}, Labels: map[string]string{}, NetworkMode: "bridge",
@@ -378,9 +378,29 @@ func TestDashboardHandler_NoPortContainerOffersRedirectOnlyConfiguration(t *test
 	formW := httptest.NewRecorder()
 	handler.handleContainerForm(formW, formReq)
 	body := formW.Body.String()
-	if formW.Code != http.StatusOK || !strings.Contains(body, `type="hidden" name="entry_port" value=""`) ||
-		!strings.Contains(body, `id="entry-redirect"`) || !strings.Contains(body, `required`) {
-		t.Fatalf("redirect-only form was not rendered: status=%d body=%s", formW.Code, body)
+	if formW.Code != http.StatusOK || !strings.Contains(body, `type="number" name="entry_port" id="entry-port"`) ||
+		!strings.Contains(body, `id="entry-redirect"`) || !strings.Contains(body, `syncPortRequirement()`) {
+		t.Fatalf("manual-port form was not rendered: status=%d body=%s", formW.Code, body)
+	}
+	if strings.Contains(body, `type="hidden" name="entry_port"`) {
+		t.Fatalf("no-port form still forced an empty port: %s", body)
+	}
+
+	form := url.Values{
+		"display_name": {"Worker"}, "entry_protocol": {"http"},
+		"entry_port": {"18080"}, "entry_path": {"/"}, "entry_ui_type": {"url"},
+	}
+	saveReq := httptest.NewRequest(http.MethodPost, "/containers/worker", strings.NewReader(form.Encode()))
+	saveReq.Header.Set("Content-Type", "application/x-www-form-urlencoded")
+	saveReq = setChiURLParam(saveReq, "id", "worker")
+	saveW := httptest.NewRecorder()
+	handler.handleContainerSave(saveW, saveReq)
+	if saveW.Code != http.StatusOK {
+		t.Fatalf("no-port manual-port save status=%d body=%s", saveW.Code, saveW.Body.String())
+	}
+	saved := storage.Get(ContainerKey("worker:latest|@worker"))
+	if saved == nil || len(saved.Entries) != 1 || saved.Entries[0].Port != "18080" || len(trigger.triggerCalls) != 1 {
+		t.Fatalf("no-port manual port was not applied: config=%+v calls=%v", saved, trigger.triggerCalls)
 	}
 }
 
