@@ -363,6 +363,7 @@ textarea {
 .button.is-primary {
     border-color: var(--wc-accent);
     background: var(--wc-accent);
+    color: #ffffff;
 }
 
 .button.is-primary:hover,
@@ -384,6 +385,18 @@ textarea {
 
 .configure-button {
     min-width: 62px;
+}
+
+.configure-button.is-state-pending {
+    border-color: #ddc17d;
+    background: #fffaf0;
+    color: var(--wc-warning);
+}
+
+.configure-button.is-state-danger {
+    border-color: #e3b6bc;
+    background: #fffafb;
+    color: var(--wc-danger);
 }
 
 .empty-state {
@@ -840,27 +853,16 @@ textarea {
         min-height: 56px;
     }
 
-    .container-table tbody td:last-child {
-        padding-left: 0;
-        border-bottom: 0;
-        text-align: right;
-    }
-
-    .container-table tbody td:last-child::before,
     .container-table .empty-state::before {
         display: none;
     }
 
-    .container-table .action-cell.is-empty {
-        display: none;
+    .container-table tbody td:last-child {
+        border-bottom: 0;
     }
 
     .container-table .empty-state {
         padding: 44px 18px !important;
-    }
-
-    .configure-button {
-        width: 100%;
     }
 
     .detail-header {

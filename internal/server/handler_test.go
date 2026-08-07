@@ -207,6 +207,18 @@ func TestDashboardHandler_ContainerList(t *testing.T) {
 	if !strings.Contains(body, "redis") {
 		t.Error("response should contain container 'redis'")
 	}
+	if !strings.Contains(body, "<th>应用配置</th>") {
+		t.Error("response should combine application status and actions")
+	}
+	if strings.Contains(body, "<th>应用状态</th>") || strings.Contains(body, ">操作</th>") {
+		t.Error("response should not render separate application status and action columns")
+	}
+	if !strings.Contains(body, "由标签配置") {
+		t.Error("label-managed containers should explain why dashboard actions are unavailable")
+	}
+	if !strings.Contains(body, "添加配置") || !strings.Contains(body, "add-config-button") {
+		t.Error("unconfigured containers should offer a distinct add action")
+	}
 }
 
 func TestDashboardHandler_ContainerListShowsAsyncFailure(t *testing.T) {
@@ -221,8 +233,26 @@ func TestDashboardHandler_ContainerListShowsAsyncFailure(t *testing.T) {
 	req := httptest.NewRequest(http.MethodGet, "/containers", nil)
 	w := httptest.NewRecorder()
 	handler.handleContainerList(w, req)
-	if body := w.Body.String(); w.Code != http.StatusOK || !strings.Contains(body, "应用失败") || !strings.Contains(body, "install failed") {
+	if body := w.Body.String(); w.Code != http.StatusOK || !strings.Contains(body, "应用失败") ||
+		!strings.Contains(body, "install failed") || strings.Contains(body, "修改配置") {
 		t.Fatalf("async failure was not visible: status=%d body=%s", w.Code, body)
+	}
+}
+
+func TestDashboardHandler_ContainerListUsesSingleAppliedConfigAction(t *testing.T) {
+	handler, storage, _ := setupTestHandler(t)
+	key := ContainerKey("nginx:alpine|80:8080")
+	if err := storage.Set(&StoredConfig{Key: key, AppName: "watchcow.nginx"}); err != nil {
+		t.Fatal(err)
+	}
+
+	req := httptest.NewRequest(http.MethodGet, "/containers", nil)
+	w := httptest.NewRecorder()
+	handler.handleContainerList(w, req)
+	body := w.Body.String()
+	if w.Code != http.StatusOK || !strings.Contains(body, "修改配置") || !strings.Contains(body, "is-primary is-outlined") ||
+		strings.Contains(body, "已应用") {
+		t.Fatalf("applied config rendered duplicate state and action: status=%d body=%s", w.Code, body)
 	}
 }
 

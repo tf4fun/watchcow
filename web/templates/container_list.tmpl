@@ -14,12 +14,11 @@
     <div class="data-surface">
         <table class="table is-fullwidth container-table">
             <colgroup>
-                <col style="width:18%">
-                <col style="width:23%">
-                <col style="width:18%">
-                <col style="width:12%">
+                <col style="width:19%">
+                <col style="width:28%">
                 <col style="width:20%">
-                <col style="width:9%">
+                <col style="width:15%">
+                <col style="width:18%">
             </colgroup>
             <thead>
                 <tr>
@@ -27,8 +26,7 @@
                     <th>镜像</th>
                     <th>端口</th>
                     <th>运行状态</th>
-                    <th>应用状态</th>
-                    <th></th>
+                    <th>应用配置</th>
                 </tr>
             </thead>
             <tbody>
@@ -59,52 +57,53 @@
                             {{if eq .State "running"}}运行中{{else if eq .State "exited"}}已停止{{else}}{{.State}}{{end}}
                         </span>
                     </td>
-                    <td data-label="应用状态">
+                    <td data-label="应用配置" class="application-cell">
                         {{if .HasLabelConfig}}
-                            <span class="status-chip is-label">标签配置</span>
+                            <span class="status-chip is-label" title="此容器由 Docker labels 管理">由标签配置</span>
                         {{else if .LegacyConfigConflict}}
-                            <span class="status-chip is-danger">旧配置冲突</span>
+                            <button class="button is-small is-state-danger configure-button"
+                                    hx-get="containers/{{.ID}}"
+                                    hx-target="#main-content"
+                                    hx-swap="innerHTML show:top"
+                                    title="检测到旧配置冲突，点击处理">
+                                处理冲突
+                            </button>
                         {{else if .HasStoredConfig}}
-                            {{if .Config.Deleting}}
-                                {{if .Config.LastError}}
-                                <span class="status-chip is-danger">删除失败</span>
+                            <button class="button is-small configure-button
+                                    {{if .Config.Deleting}}{{if .Config.LastError}}is-state-danger{{else}}is-state-pending{{end}}
+                                    {{else if .Config.Pending}}{{if .Config.LastError}}is-state-danger{{else}}is-state-pending{{end}}
+                                    {{else if .Config.LastError}}is-state-danger
+                                    {{else}}is-primary is-outlined{{end}}"
+                                    hx-get="containers/{{.ID}}"
+                                    hx-target="#main-content"
+                                    hx-swap="innerHTML show:top"
+                                    title="点击查看配置">
+                                {{if .Config.Deleting}}
+                                    {{if .Config.LastError}}删除失败{{else}}删除中{{end}}
+                                {{else if .Config.Pending}}
+                                    {{if .Config.LastError}}应用失败{{else if eq .State "running"}}应用中{{else}}等待运行{{end}}
+                                {{else if .Config.LastError}}
+                                    待修复
                                 {{else}}
-                                <span class="status-chip is-pending">删除中</span>
+                                    修改配置
                                 {{end}}
-                            {{else if .Config.Pending}}
-                                {{if .Config.LastError}}
-                                <span class="status-chip is-danger">应用失败</span>
-                                {{else if eq .State "running"}}
-                                <span class="status-chip is-pending">应用中</span>
-                                {{else}}
-                                <span class="status-chip is-pending">等待容器运行</span>
-                                {{end}}
-                            {{else if .Config.LastError}}
-                                <span class="status-chip is-blocked">待修复</span>
-                            {{else}}
-                                <span class="status-chip is-applied">已应用</span>
-                            {{end}}
+                            </button>
                             {{if .Config.LastError}}
                             <p class="status-detail" title="{{.Config.LastError}}">{{.Config.LastError}}</p>
                             {{end}}
                         {{else}}
-                            <span class="status-chip">未配置</span>
-                        {{end}}
-                    </td>
-                    <td data-label="操作" class="has-text-right action-cell {{if .HasLabelConfig}}is-empty{{end}}">
-                        {{if not .HasLabelConfig}}
-                        <button class="button is-small is-primary is-outlined configure-button"
-                                hx-get="containers/{{.ID}}"
-                                hx-target="#main-content"
-                                hx-swap="innerHTML show:top">
-                            配置
-                        </button>
+                            <button class="button is-small is-primary configure-button add-config-button"
+                                    hx-get="containers/{{.ID}}"
+                                    hx-target="#main-content"
+                                    hx-swap="innerHTML show:top">
+                                添加配置
+                            </button>
                         {{end}}
                     </td>
                 </tr>
                 {{else}}
                 <tr>
-                    <td colspan="6" class="empty-state">
+                    <td colspan="5" class="empty-state">
                         <strong>未找到容器</strong>
                         <span>Docker 中暂无可显示的容器</span>
                     </td>
