@@ -2,20 +2,31 @@ package server
 
 import (
 	"encoding/gob"
+	"io"
 	"log/slog"
 	"os"
 	"path/filepath"
 	"sort"
+	"strings"
 	"sync"
+	"time"
 
 	"watchcow/internal/docker"
 )
 
+type storageFile interface {
+	io.Writer
+	Sync() error
+	Close() error
+}
+
 // DashboardStorage manages persistent storage of container configurations.
 type DashboardStorage struct {
-	mu       sync.RWMutex
-	configs  map[ContainerKey]*StoredConfig
-	filePath string
+	mu         sync.RWMutex
+	configs    map[ContainerKey]*StoredConfig
+	filePath   string
+	createFile func(string) (storageFile, error)
+	renameFile func(string, string) error
 }
 
 // NewDashboardStorage creates a new storage instance.
@@ -38,6 +49,10 @@ func NewDashboardStorage() (*DashboardStorage, error) {
 	s := &DashboardStorage{
 		configs:  make(map[ContainerKey]*StoredConfig),
 		filePath: filePath,
+		createFile: func(path string) (storageFile, error) {
+			return os.Create(path)
+		},
+		renameFile: os.Rename,
 	}
 
 	// Load existing data
@@ -89,7 +104,7 @@ func (s *DashboardStorage) tryLoadFrom(path string) error {
 // to prevent data loss on power failure.
 func (s *DashboardStorage) save() error {
 	tmpPath := s.filePath + ".tmp"
-	f, err := os.Create(tmpPath)
+	f, err := s.createFile(tmpPath)
 	if err != nil {
 		return err
 	}
@@ -106,9 +121,16 @@ func (s *DashboardStorage) save() error {
 		os.Remove(tmpPath)
 		return err
 	}
-	f.Close()
+	if err := f.Close(); err != nil {
+		os.Remove(tmpPath)
+		return err
+	}
 
-	return os.Rename(tmpPath, s.filePath)
+	if err := s.renameFile(tmpPath, s.filePath); err != nil {
+		os.Remove(tmpPath)
+		return err
+	}
+	return nil
 }
 
 // Get retrieves a configuration by key.
@@ -126,8 +148,9 @@ func (s *DashboardStorage) Set(cfg *StoredConfig) error {
 	s.mu.Lock()
 	defer s.mu.Unlock()
 
-	s.configs[cfg.Key] = cloneStoredConfig(cfg)
-	return s.save()
+	return s.updateAndSaveLocked(func(configs map[ContainerKey]*StoredConfig) {
+		configs[cfg.Key] = cloneStoredConfig(cfg)
+	})
 }
 
 // Replace stores cfg and removes obsolete keys in the same persisted update.
@@ -135,13 +158,14 @@ func (s *DashboardStorage) Replace(obsolete []ContainerKey, cfg *StoredConfig) e
 	s.mu.Lock()
 	defer s.mu.Unlock()
 
-	for _, key := range obsolete {
-		if key != cfg.Key {
-			delete(s.configs, key)
+	return s.updateAndSaveLocked(func(configs map[ContainerKey]*StoredConfig) {
+		for _, key := range obsolete {
+			if key != cfg.Key {
+				delete(configs, key)
+			}
 		}
-	}
-	s.configs[cfg.Key] = cloneStoredConfig(cfg)
-	return s.save()
+		configs[cfg.Key] = cloneStoredConfig(cfg)
+	})
 }
 
 // Delete removes a configuration.
@@ -149,8 +173,9 @@ func (s *DashboardStorage) Delete(key ContainerKey) error {
 	s.mu.Lock()
 	defer s.mu.Unlock()
 
-	delete(s.configs, key)
-	return s.save()
+	return s.updateAndSaveLocked(func(configs map[ContainerKey]*StoredConfig) {
+		delete(configs, key)
+	})
 }
 
 // DeleteMany removes all supplied keys in one persisted update.
@@ -158,10 +183,11 @@ func (s *DashboardStorage) DeleteMany(keys []ContainerKey) error {
 	s.mu.Lock()
 	defer s.mu.Unlock()
 
-	for _, key := range keys {
-		delete(s.configs, key)
-	}
-	return s.save()
+	return s.updateAndSaveLocked(func(configs map[ContainerKey]*StoredConfig) {
+		for _, key := range keys {
+			delete(configs, key)
+		}
+	})
 }
 
 // List returns all stored configurations.
@@ -214,6 +240,61 @@ func (s *DashboardStorage) GetCompatibleCandidates(image string, identityPorts m
 	return matches
 }
 
+// GetNamedCandidates implements docker.ConfigProvider for stable ownership
+// across image-tag and published-port changes.
+func (s *DashboardStorage) GetNamedCandidates(containerName string) []docker.StoredConfigMatch {
+	s.mu.RLock()
+	defer s.mu.RUnlock()
+
+	keys := s.findNamedKeysLocked(containerName)
+	matches := make([]docker.StoredConfigMatch, 0, len(keys))
+	for _, key := range keys {
+		matches = append(matches, docker.StoredConfigMatch{
+			Key:    string(key),
+			Config: convertStoredConfigToDocker(s.configs[key]),
+		})
+	}
+	return matches
+}
+
+// GetDeletingConfigs implements docker.ConfigProvider so uninstall intents are
+// recoverable even when their Docker container is stopped or gone.
+func (s *DashboardStorage) GetDeletingConfigs() []docker.StoredConfigMatch {
+	s.mu.RLock()
+	defer s.mu.RUnlock()
+
+	keys := make([]ContainerKey, 0)
+	for key, config := range s.configs {
+		if config.Deleting {
+			keys = append(keys, key)
+		}
+	}
+	sort.Slice(keys, func(i, j int) bool { return keys[i] < keys[j] })
+	matches := make([]docker.StoredConfigMatch, 0, len(keys))
+	for _, key := range keys {
+		matches = append(matches, docker.StoredConfigMatch{Key: string(key), Config: convertStoredConfigToDocker(s.configs[key])})
+	}
+	return matches
+}
+
+// GetAllConfigs implements docker.ConfigProvider for applied-owner
+// reconciliation when containers are removed while WatchCow is offline.
+func (s *DashboardStorage) GetAllConfigs() []docker.StoredConfigMatch {
+	s.mu.RLock()
+	defer s.mu.RUnlock()
+
+	keys := make([]ContainerKey, 0, len(s.configs))
+	for key := range s.configs {
+		keys = append(keys, key)
+	}
+	sort.Slice(keys, func(i, j int) bool { return keys[i] < keys[j] })
+	matches := make([]docker.StoredConfigMatch, 0, len(keys))
+	for _, key := range keys {
+		matches = append(matches, docker.StoredConfigMatch{Key: string(key), Config: convertStoredConfigToDocker(s.configs[key])})
+	}
+	return matches
+}
+
 // MarkApplied clears Pending for the exact revision that was installed.
 func (s *DashboardStorage) MarkApplied(key, revision string) error {
 	s.mu.Lock()
@@ -223,10 +304,71 @@ func (s *DashboardStorage) MarkApplied(key, revision string) error {
 	if !ok || cfg.Revision != revision || !cfg.Pending {
 		return nil
 	}
-	cfg = cloneStoredConfig(cfg)
-	cfg.Pending = false
-	s.configs[ContainerKey(key)] = cfg
-	return s.save()
+	return s.updateAndSaveLocked(func(configs map[ContainerKey]*StoredConfig) {
+		cfg := configs[ContainerKey(key)]
+		cfg.Pending = false
+		cfg.LastError = ""
+	})
+}
+
+// MarkFailed records an asynchronous apply/delete error using an exact
+// revision CAS, including legacy configs whose revision is empty.
+func (s *DashboardStorage) MarkFailed(key, revision, message string) error {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+
+	cfg, ok := s.configs[ContainerKey(key)]
+	if !ok || cfg.Revision != revision {
+		return nil
+	}
+	return s.updateAndSaveLocked(func(configs map[ContainerKey]*StoredConfig) {
+		config := configs[ContainerKey(key)]
+		config.LastError = message
+		if !config.Deleting {
+			config.Pending = true
+		}
+	})
+}
+
+// MarkDeleting persists delete intent before asynchronous package removal.
+func (s *DashboardStorage) MarkDeleting(keys []ContainerKey) error {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+
+	return s.updateAndSaveLocked(func(configs map[ContainerKey]*StoredConfig) {
+		for _, key := range keys {
+			if cfg, ok := configs[key]; ok {
+				cfg.Deleting = true
+				cfg.Pending = false
+				cfg.LastError = ""
+			}
+		}
+	})
+}
+
+// CompleteDelete removes deleting configs for an app after its fnOS package is
+// gone. A concurrent save clears Deleting and preserves the active config.
+func (s *DashboardStorage) CompleteDelete(appName string) error {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+
+	found := false
+	for _, cfg := range s.configs {
+		if cfg.AppName == appName && cfg.Deleting {
+			found = true
+			break
+		}
+	}
+	if !found {
+		return nil
+	}
+	return s.updateAndSaveLocked(func(configs map[ContainerKey]*StoredConfig) {
+		for key, cfg := range configs {
+			if cfg.AppName == appName && cfg.Deleting {
+				delete(configs, key)
+			}
+		}
+	})
 }
 
 // MigrateLegacy atomically moves a uniquely-owned legacy key to the canonical
@@ -246,14 +388,91 @@ func (s *DashboardStorage) MigrateLegacy(oldKey, newKey string) (*docker.StoredC
 	}
 	migrated := cloneStoredConfig(cfg)
 	migrated.Key = current
-	delete(s.configs, old)
-	s.configs[current] = migrated
-	if err := s.save(); err != nil {
-		delete(s.configs, current)
-		s.configs[old] = cfg
+	reconcileMigratedRuntimeConfig(migrated, old, current)
+	if err := s.updateAndSaveLocked(func(configs map[ContainerKey]*StoredConfig) {
+		delete(configs, old)
+		configs[current] = migrated
+	}); err != nil {
 		return nil, err
 	}
 	return convertStoredConfigToDocker(migrated), nil
+}
+
+func reconcileMigratedRuntimeConfig(config *StoredConfig, oldKey, newKey ContainerKey) {
+	oldName, oldPorts, oldNamed := parseNamedContainerKey(oldKey)
+	newName, newPorts, newNamed := parseNamedContainerKey(newKey)
+	if !oldNamed || !newNamed {
+		return
+	}
+
+	requiresApply := oldName != newName
+	blockingError := ""
+	oldWebPorts := webPortsFromIdentity(oldPorts)
+	newWebPorts := webPortsFromIdentity(newPorts)
+	containerPorts := make([]string, 0, len(oldWebPorts))
+	for containerPort := range oldWebPorts {
+		containerPorts = append(containerPorts, containerPort)
+	}
+	sort.Strings(containerPorts)
+	for i := range config.Entries {
+		if config.Entries[i].Name != "" {
+			continue
+		}
+		for _, containerPort := range containerPorts {
+			oldHostPort := oldWebPorts[containerPort]
+			newHostPort := newWebPorts[containerPort]
+			if oldHostPort != "" && config.Entries[i].Port == oldHostPort && oldHostPort != newHostPort {
+				if newHostPort == "" {
+					newHostPort = firstHostPort(newWebPorts)
+				}
+				config.Entries[i].Port = newHostPort
+				if newHostPort == "" && config.Entries[i].Redirect == "" {
+					blockingError = "原入口端口映射已移除，请配置新的端口或外部跳转地址"
+				}
+				requiresApply = true
+				break
+			}
+		}
+		break
+	}
+	if !requiresApply {
+		return
+	}
+
+	config.Pending = blockingError == ""
+	config.Deleting = false
+	config.LastError = blockingError
+	config.Revision = dashboardConfigRevision(config)
+	config.UpdatedAt = time.Now()
+}
+
+func parseNamedContainerKey(key ContainerKey) (string, map[string]string, bool) {
+	_, identity, ok := strings.Cut(string(key), "|")
+	if !ok || !strings.HasPrefix(identity, "@") {
+		return "", nil, false
+	}
+	name, encodedPorts, hasPorts := strings.Cut(strings.TrimPrefix(identity, "@"), ";")
+	ports := make(map[string]string)
+	if hasPorts {
+		for _, pair := range strings.Split(encodedPorts, ",") {
+			containerPort, hostPort, valid := strings.Cut(pair, ":")
+			if valid {
+				ports[containerPort] = hostPort
+			}
+		}
+	}
+	return name, ports, true
+}
+
+func webPortsFromIdentity(ports map[string]string) map[string]string {
+	webPorts := make(map[string]string)
+	for key, hostPort := range ports {
+		containerPort, protocol, qualified := strings.Cut(key, "/")
+		if !qualified || protocol == "tcp" {
+			webPorts[containerPort] = hostPort
+		}
+	}
+	return webPorts
 }
 
 // FindCompatibleKeys returns all legacy storage keys matching the container.
@@ -261,6 +480,31 @@ func (s *DashboardStorage) FindCompatibleKeys(image string, identityPorts map[st
 	s.mu.RLock()
 	defer s.mu.RUnlock()
 	return s.findCompatibleKeysLocked(image, identityPorts, portOptions)
+}
+
+// FindNamedKeys returns configurations whose canonical owner has the supplied
+// container name, independent of image and port details.
+func (s *DashboardStorage) FindNamedKeys(containerName string) []ContainerKey {
+	s.mu.RLock()
+	defer s.mu.RUnlock()
+	return s.findNamedKeysLocked(containerName)
+}
+
+func (s *DashboardStorage) findNamedKeysLocked(containerName string) []ContainerKey {
+	wanted := strings.TrimPrefix(containerName, "/")
+	var keys []ContainerKey
+	for key := range s.configs {
+		_, identity, ok := strings.Cut(string(key), "|")
+		if !ok || !strings.HasPrefix(identity, "@") {
+			continue
+		}
+		name, _, _ := strings.Cut(strings.TrimPrefix(identity, "@"), ";")
+		if name == wanted {
+			keys = append(keys, key)
+		}
+	}
+	sort.Slice(keys, func(i, j int) bool { return keys[i] < keys[j] })
+	return keys
 }
 
 func (s *DashboardStorage) findCompatibleKeysLocked(image string, identityPorts map[string]string, portOptions map[string][]string) []ContainerKey {
@@ -291,6 +535,8 @@ func convertStoredConfigToDocker(cfg *StoredConfig) *docker.StoredConfig {
 		IconBase64:  cfg.IconBase64,
 		Revision:    cfg.Revision,
 		Pending:     cfg.Pending,
+		Deleting:    cfg.Deleting,
+		LastError:   cfg.LastError,
 		Entries:     make([]docker.StoredEntry, 0, len(cfg.Entries)),
 	}
 
@@ -317,4 +563,25 @@ func cloneStoredConfig(cfg *StoredConfig) *StoredConfig {
 		}
 	}
 	return &copy
+}
+
+func cloneStoredConfigs(configs map[ContainerKey]*StoredConfig) map[ContainerKey]*StoredConfig {
+	cloned := make(map[ContainerKey]*StoredConfig, len(configs))
+	for key, cfg := range configs {
+		cloned[key] = cloneStoredConfig(cfg)
+	}
+	return cloned
+}
+
+// updateAndSaveLocked applies a mutation transactionally. The caller must hold
+// s.mu for writing; failed persistence leaves both memory and disk unchanged.
+func (s *DashboardStorage) updateAndSaveLocked(update func(map[ContainerKey]*StoredConfig)) error {
+	previous := s.configs
+	s.configs = cloneStoredConfigs(previous)
+	update(s.configs)
+	if err := s.save(); err != nil {
+		s.configs = previous
+		return err
+	}
+	return nil
 }

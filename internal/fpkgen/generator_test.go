@@ -27,6 +27,35 @@ func TestExtractConfigRejectsUnsafeExplicitAppName(t *testing.T) {
 	}
 }
 
+func TestExtractConfigSupportsHostNetworkWithExplicitServicePort(t *testing.T) {
+	generator := &Generator{}
+	container := &dockercontainer.InspectResponse{
+		ContainerJSONBase: &dockercontainer.ContainerJSONBase{
+			ID: "1234567890abcdef", Name: "/host-app",
+			HostConfig: &dockercontainer.HostConfig{NetworkMode: "host"},
+		},
+		Config: &dockercontainer.Config{
+			Image: "example/host-app:latest",
+			Labels: map[string]string{
+				"watchcow.enable":       "true",
+				"watchcow.service_port": "8080",
+			},
+		},
+	}
+
+	config, err := generator.extractConfig(container)
+	if err != nil {
+		t.Fatal(err)
+	}
+	entry := config.GetDefaultEntry()
+	if config.Port != "8080" || entry == nil || entry.Port != "8080" {
+		t.Fatalf("host-network service port was not propagated: config=%+v entry=%+v", config, entry)
+	}
+	if data := NewTemplateData(config); data.Port != "8080" {
+		t.Fatalf("manifest service port = %q, want 8080", data.Port)
+	}
+}
+
 func TestGenerateFromConfigRejectsUnsafeAppNameBeforeEditingOutput(t *testing.T) {
 	appDir := t.TempDir()
 	marker := filepath.Join(appDir, "keep")

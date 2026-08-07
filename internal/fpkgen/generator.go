@@ -196,7 +196,7 @@ func (g *Generator) extractConfig(container *dockercontainer.InspectResponse) (*
 		return nil, fmt.Errorf("invalid watchcow.appname %q: %w", appName, err)
 	}
 
-	defaultIcon := getLabel(labels, "watchcow.icon", buildIconURLFromImage(container.Config.Image)) // URL → URLIconSource
+	defaultIcon := getLabel(labels, "watchcow.icon", DefaultIconForImage(container.Config.Image)) // URL → URLIconSource
 	displayName := getLabel(labels, "watchcow.display_name", PrettifyName(name))
 
 	config := &AppConfig{
@@ -417,6 +417,12 @@ func buildIconURLFromImage(image string) string {
 	imageName := parts[len(parts)-1]
 	imageName = strings.Split(imageName, ":")[0]
 	return buildIconURL(imageName)
+}
+
+// DefaultIconForImage returns the same automatic icon source used during
+// package generation so runtime registry restoration stays consistent.
+func DefaultIconForImage(image string) string {
+	return buildIconURLFromImage(image)
 }
 
 // PrettifyName converts a container name to a display title.

@@ -4,7 +4,10 @@ import (
 	"context"
 	"errors"
 	"fmt"
+	"os"
+	"path/filepath"
 	"reflect"
+	"strings"
 	"sync"
 	"testing"
 
@@ -23,20 +26,46 @@ func (p mapConfigProvider) GetByKey(key string) *StoredConfig {
 
 type fakeAppInstaller struct {
 	uninstallErr    error
+	installErr      error
+	startErr        error
+	stopErr         error
 	uninstallCalls  []string
+	installCalls    int
+	startCalls      []string
+	stopCalls       []string
 	installedChecks []string
 	installed       bool
+	installedApps   map[string]bool
+	onUninstall     func()
 }
 
-func (i *fakeAppInstaller) InstallLocal(string, map[string]string) error { return nil }
-func (i *fakeAppInstaller) StartApp(string) error                        { return nil }
-func (i *fakeAppInstaller) StopApp(string) error                         { return nil }
+func (i *fakeAppInstaller) InstallLocal(string, map[string]string) error {
+	i.installCalls++
+	return i.installErr
+}
+func (i *fakeAppInstaller) StartApp(appName string) error {
+	i.startCalls = append(i.startCalls, appName)
+	return i.startErr
+}
+func (i *fakeAppInstaller) StopApp(appName string) error {
+	i.stopCalls = append(i.stopCalls, appName)
+	return i.stopErr
+}
 func (i *fakeAppInstaller) IsAppInstalled(appName string) bool {
 	i.installedChecks = append(i.installedChecks, appName)
+	if i.installedApps != nil {
+		return i.installedApps[appName]
+	}
 	return i.installed
 }
 func (i *fakeAppInstaller) Uninstall(appName string) error {
 	i.uninstallCalls = append(i.uninstallCalls, appName)
+	if i.onUninstall != nil {
+		i.onUninstall()
+	}
+	if i.uninstallErr == nil && i.installedApps != nil {
+		i.installedApps[appName] = false
+	}
 	return i.uninstallErr
 }
 
@@ -50,9 +79,62 @@ func (p mapConfigProvider) GetCompatibleCandidates(image string, identityPorts m
 	return matches
 }
 
+func (p mapConfigProvider) GetNamedCandidates(containerName string) []StoredConfigMatch {
+	var matches []StoredConfigMatch
+	for key, config := range p {
+		_, identity, ok := strings.Cut(key, "|")
+		if !ok || !strings.HasPrefix(identity, "@") {
+			continue
+		}
+		name, _, _ := strings.Cut(strings.TrimPrefix(identity, "@"), ";")
+		if name == strings.TrimPrefix(containerName, "/") {
+			matches = append(matches, StoredConfigMatch{Key: key, Config: config})
+		}
+	}
+	return matches
+}
+
+func (p mapConfigProvider) GetDeletingConfigs() []StoredConfigMatch {
+	var matches []StoredConfigMatch
+	for key, config := range p {
+		if config.Deleting {
+			matches = append(matches, StoredConfigMatch{Key: key, Config: config})
+		}
+	}
+	return matches
+}
+
+func (p mapConfigProvider) GetAllConfigs() []StoredConfigMatch {
+	var matches []StoredConfigMatch
+	for key, config := range p {
+		matches = append(matches, StoredConfigMatch{Key: key, Config: config})
+	}
+	return matches
+}
+
 func (p mapConfigProvider) MarkApplied(key, revision string) error {
 	if config := p[key]; config != nil && config.Revision == revision {
 		config.Pending = false
+		config.LastError = ""
+	}
+	return nil
+}
+
+func (p mapConfigProvider) MarkFailed(key, revision, message string) error {
+	if config := p[key]; config != nil && config.Revision == revision {
+		config.LastError = message
+		if !config.Deleting {
+			config.Pending = true
+		}
+	}
+	return nil
+}
+
+func (p mapConfigProvider) CompleteDelete(appName string) error {
+	for key, config := range p {
+		if config.AppName == appName && config.Deleting {
+			delete(p, key)
+		}
 	}
 	return nil
 }
@@ -143,6 +225,8 @@ func TestRegisterAppFromLabelsWithRedirectOnlyRestoresDefaultEntry(t *testing.T)
 }
 
 func TestRegisterAppFromLabelsRestoresGeneratedDisplayName(t *testing.T) {
+	t.Setenv("TRIM_DATA_SHARE_PATHS", "")
+	t.Setenv("WATCHCOW_ICON_CDN_TEMPLATE", "https://icons.example/%s.png")
 	monitor := &Monitor{registry: app.NewRegistry()}
 	monitor.containers.Store("container-id", &ContainerState{
 		Image: "example/my-app:latest",
@@ -154,7 +238,9 @@ func TestRegisterAppFromLabelsRestoresGeneratedDisplayName(t *testing.T) {
 	})
 
 	registered := monitor.registry.Get("watchcow.my-app")
-	if registered.DisplayName != "My App" || registered.Port != "18080" {
+	entry := registered.GetDefaultEntry()
+	if registered.DisplayName != "My App" || registered.Port != "18080" ||
+		registered.Icon != "https://icons.example/my-app.png" || entry == nil || entry.Icon != registered.Icon {
 		t.Errorf("restored app differs from generated defaults: %+v", registered)
 	}
 }
@@ -233,7 +319,7 @@ func TestRegisterAppFromStoredConfigPreservesFields(t *testing.T) {
 		Maintainer:  "maintainer",
 		IconBase64:  "app-icon",
 		Entries: []StoredEntry{{
-			Title:         "Default",
+			Title:         "",
 			Protocol:      "https",
 			Port:          "8443",
 			Path:          "/app",
@@ -253,7 +339,7 @@ func TestRegisterAppFromStoredConfigPreservesFields(t *testing.T) {
 		t.Fatalf("stored app was not fully registered: %+v", registered)
 	}
 	entry := registered.Entries[0]
-	if registered.Image != "test:latest" || registered.Icon != "app-icon" ||
+	if registered.Image != "test:latest" || registered.Icon != "app-icon" || entry.Title != "Test" ||
 		registered.Port != "8443" || entry.Icon != "entry-icon" ||
 		!entry.ForceExternal || !entry.NoDisplay || !reflect.DeepEqual(entry.FileTypes, []string{"txt"}) {
 		t.Errorf("stored fields were not preserved: app=%+v entry=%+v", registered, entry)
@@ -328,6 +414,22 @@ func TestPortExtractionUsesSameBindingForEventsAndScan(t *testing.T) {
 	identityPorts, _ := extractPortMappings(portMap)
 	if got := monitor.getStoredConfigForPorts("", "test:latest", identityPorts, options); got != want {
 		t.Errorf("alternate binding storage lookup = %v, want %v", got, want)
+	}
+}
+
+func TestContainerStateFromSummaryPreservesNetworkMode(t *testing.T) {
+	ctr := container.Summary{
+		ID:     "1234567890abcdef",
+		Names:  []string{"/host-app"},
+		Image:  "host-app:latest",
+		State:  "running",
+		Labels: map[string]string{"watchcow.enable": "true"},
+	}
+	ctr.HostConfig.NetworkMode = "host"
+
+	state := containerStateFromSummary(ctr)
+	if state.NetworkMode != "host" || state.ContainerID != "1234567890ab" || state.ContainerName != "host-app" {
+		t.Fatalf("summary state lost runtime identity: %+v", state)
 	}
 }
 
@@ -449,6 +551,22 @@ func TestStoredConfigLookupMigratesRenamedContainerKey(t *testing.T) {
 	}
 }
 
+func TestStoredConfigLookupFindsSameNameAfterImageAndPortChange(t *testing.T) {
+	oldKey := "web:1.0|@web;8080/tcp:18080"
+	newKey := "web:2.0|@web;8080/tcp:28080"
+	provider := mapConfigProvider{oldKey: {AppName: "watchcow.web"}}
+	monitor := &Monitor{configProvider: provider}
+	monitor.containers.Store("web", &ContainerState{
+		ContainerID: "web", ContainerName: "web", Image: "web:2.0",
+		Ports: map[string]string{"8080/tcp": "28080"}, LegacyPortOptions: map[string][]string{"8080": {"28080"}},
+	})
+
+	config := monitor.getStoredConfigForPorts("web", "web:2.0", map[string]string{"8080/tcp": "28080"}, map[string][]string{"8080": {"28080"}})
+	if config == nil || config.Key != newKey || provider[oldKey] != nil || provider[newKey] == nil {
+		t.Fatalf("same-name config was not recovered: config=%+v provider=%+v", config, provider)
+	}
+}
+
 func TestDestroyReconcilesNewlyUniqueLegacyConfig(t *testing.T) {
 	provider := mapConfigProvider{"redis:latest|": {AppName: "watchcow.redis"}}
 	monitor := &Monitor{
@@ -529,6 +647,46 @@ func TestDashboardUninstallDropsStaleDeleteAfterNewSave(t *testing.T) {
 	})
 	if len(installer.uninstallCalls) != 0 {
 		t.Fatalf("stale delete uninstalled newly saved app: %v", installer.uninstallCalls)
+	}
+}
+
+func TestDashboardUninstallCompletesDurableDeleteOnlyAfterSuccess(t *testing.T) {
+	key := "web:latest|@web;8080/tcp:18080"
+	for _, test := range []struct {
+		name       string
+		installed  bool
+		uninstall  error
+		wantConfig bool
+		wantCalls  int
+	}{
+		{name: "installed success", installed: true, wantCalls: 1},
+		{name: "not installed", wantCalls: 0},
+		{name: "failure", installed: true, uninstall: errors.New("uninstall failed"), wantConfig: true, wantCalls: 1},
+	} {
+		t.Run(test.name, func(t *testing.T) {
+			provider := mapConfigProvider{key: {Key: key, AppName: "watchcow.web", Deleting: true}}
+			installer := &fakeAppInstaller{installed: test.installed, uninstallErr: test.uninstall}
+			registry := app.NewRegistry()
+			registry.Register(&app.App{AppName: "watchcow.web", Status: app.StatusRunning})
+			monitor := &Monitor{installer: installer, registry: registry, configProvider: provider}
+			monitor.containers.Store("web", &ContainerState{ContainerID: "web", AppName: "watchcow.web", Installed: true})
+
+			monitor.processDashboardUninstall(&AppOperation{ContainerID: "web", AppName: "watchcow.web", ConfigKey: key})
+			config := provider[key]
+			if (config != nil) != test.wantConfig {
+				t.Fatalf("config after uninstall = %+v, want present=%v", config, test.wantConfig)
+			}
+			if len(installer.uninstallCalls) != test.wantCalls {
+				t.Fatalf("uninstall calls = %v, want %d", installer.uninstallCalls, test.wantCalls)
+			}
+			if test.uninstall != nil {
+				if config == nil || config.LastError != test.uninstall.Error() || registry.Get("watchcow.web") == nil {
+					t.Fatalf("failed uninstall was not recoverable: config=%+v app=%+v", config, registry.Get("watchcow.web"))
+				}
+			} else if registry.Get("watchcow.web") != nil {
+				t.Fatal("successful uninstall left registry ownership")
+			}
+		})
 	}
 }
 
@@ -669,6 +827,423 @@ func TestPendingConfigUninstallsPackageMissingFromState(t *testing.T) {
 	})
 	if !reflect.DeepEqual(installer.uninstallCalls, []string{"watchcow.web"}) {
 		t.Fatalf("installed package missing from state was not uninstalled: %v", installer.uninstallCalls)
+	}
+}
+
+func TestChangedLabelRevisionForcesReinstallAcrossMonitorRestart(t *testing.T) {
+	oldLabels := map[string]string{
+		"watchcow.enable":       "true",
+		"watchcow.service_port": "8080",
+	}
+	newLabels := map[string]string{
+		"watchcow.enable":       "true",
+		"watchcow.service_port": "9090",
+	}
+	state := &ContainerState{
+		ContainerID:   "container-id",
+		ContainerName: "web",
+		Image:         "web:latest",
+		State:         "running",
+		WebPorts:      map[string]string{"8080": "18080"},
+		Labels:        newLabels,
+		NetworkMode:   "bridge",
+	}
+	oldRevision := labelConfigRevision(state.ContainerName, state.Image, state.NetworkMode, state.WebPorts, oldLabels)
+	newRevision := labelRevisionForState(state)
+	installer := &fakeAppInstaller{installed: true, uninstallErr: errors.New("stop after uninstall attempt")}
+	monitor := &Monitor{
+		installer:      installer,
+		registry:       app.NewRegistry(),
+		labelRevisions: map[string]string{"watchcow.web": oldRevision},
+	}
+	monitor.containers.Store(state.ContainerID, state)
+
+	monitor.processContainerStart(context.Background(), &AppOperation{
+		ContainerID:   state.ContainerID,
+		ContainerName: state.ContainerName,
+		Labels:        newLabels,
+		LabelRevision: newRevision,
+	})
+
+	if !reflect.DeepEqual(installer.uninstallCalls, []string{"watchcow.web"}) {
+		t.Fatalf("changed label revision reused installed package: uninstall calls=%v", installer.uninstallCalls)
+	}
+}
+
+func TestMatchingLabelRevisionReusesInstalledPackage(t *testing.T) {
+	labels := map[string]string{"watchcow.enable": "true", "watchcow.service_port": "8080"}
+	state := &ContainerState{
+		ContainerID:   "container-id",
+		ContainerName: "web",
+		Image:         "web:latest",
+		State:         "running",
+		WebPorts:      map[string]string{"8080": "18080"},
+		Labels:        labels,
+		NetworkMode:   "bridge",
+	}
+	revision := labelRevisionForState(state)
+	installer := &fakeAppInstaller{installed: true}
+	monitor := &Monitor{
+		installer:      installer,
+		registry:       app.NewRegistry(),
+		labelRevisions: map[string]string{"watchcow.web": revision},
+	}
+	monitor.containers.Store(state.ContainerID, state)
+
+	monitor.processContainerStart(context.Background(), &AppOperation{
+		ContainerID:   state.ContainerID,
+		ContainerName: state.ContainerName,
+		Labels:        labels,
+		LabelRevision: revision,
+	})
+
+	if len(installer.uninstallCalls) != 0 || !reflect.DeepEqual(installer.startCalls, []string{"watchcow.web"}) {
+		t.Fatalf("matching label revision did not reuse package: uninstall=%v start=%v", installer.uninstallCalls, installer.startCalls)
+	}
+	if got := monitor.registry.Get("watchcow.web"); got == nil || got.Status != app.StatusRunning {
+		t.Fatalf("reused label app registry = %+v, want running", got)
+	}
+}
+
+func TestLabelRevisionPersistsAcrossMonitorInstances(t *testing.T) {
+	path := filepath.Join(t.TempDir(), labelRevisionsFilename)
+	first := &Monitor{labelRevisions: make(map[string]string), labelRevisionsPath: path}
+	if err := first.markLabelRevisionAppliedForContainer("watchcow.web", "revision-a", "web"); err != nil {
+		t.Fatal(err)
+	}
+
+	state, err := loadPersistedMonitorState(path)
+	if err != nil {
+		t.Fatal(err)
+	}
+	second := &Monitor{
+		labelRevisions: state.LabelRevisions, labelOwners: state.LabelOwners,
+		pendingUninstalls: state.PendingUninstalls, labelRevisionsPath: path,
+	}
+	if !second.isLabelRevisionApplied("watchcow.web", "revision-a") {
+		t.Fatalf("applied label revision did not survive restart: %v", state.LabelRevisions)
+	}
+	if got := second.appliedLabelAppForContainer("web"); got != "watchcow.web" {
+		t.Fatalf("applied label owner did not survive restart: %q", got)
+	}
+	if err := second.clearLabelRevision("watchcow.web"); err != nil {
+		t.Fatal(err)
+	}
+	state, err = loadPersistedMonitorState(path)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, ok := state.LabelRevisions["watchcow.web"]; ok || len(state.LabelOwners) != 0 {
+		t.Fatalf("cleared label state reappeared after restart: %+v", state)
+	}
+}
+
+func TestSourceSwitchUninstallsPreviouslyAppliedPackage(t *testing.T) {
+	for _, test := range []struct {
+		name       string
+		op         *AppOperation
+		provider   mapConfigProvider
+		previous   string
+		desired    string
+		labelState bool
+	}{
+		{
+			name: "dashboard to labels with different app name",
+			op: &AppOperation{ContainerID: "web", ContainerName: "web", Labels: map[string]string{
+				"watchcow.enable": "true", "watchcow.appname": "watchcow.label-web",
+			}, PreviousAppName: "watchcow.dashboard-web"},
+			previous: "watchcow.dashboard-web", desired: "watchcow.label-web",
+		},
+		{
+			name: "labels to dashboard with different app name",
+			op: &AppOperation{ContainerID: "web", ContainerName: "web", StoredConfig: &StoredConfig{
+				Key: "web|@web", AppName: "watchcow.dashboard-web", Revision: "a",
+			}, PreviousAppName: "watchcow.label-web"},
+			provider: mapConfigProvider{"web|@web": {Key: "web|@web", AppName: "watchcow.dashboard-web", Revision: "a"}},
+			previous: "watchcow.label-web", desired: "watchcow.dashboard-web",
+		},
+		{
+			name: "labels to dashboard with the same app name",
+			op: &AppOperation{ContainerID: "web", ContainerName: "web", StoredConfig: &StoredConfig{
+				Key: "web|@web", AppName: "watchcow.web", Revision: "a",
+			}},
+			provider: mapConfigProvider{"web|@web": {Key: "web|@web", AppName: "watchcow.web", Revision: "a"}},
+			previous: "watchcow.web", desired: "watchcow.web", labelState: true,
+		},
+	} {
+		t.Run(test.name, func(t *testing.T) {
+			uninstallErr := errors.New("stop after source-switch uninstall")
+			installer := &fakeAppInstaller{
+				installedApps: map[string]bool{test.previous: true, test.desired: test.previous == test.desired},
+				uninstallErr:  uninstallErr,
+			}
+			monitor := &Monitor{
+				installer: installer, registry: app.NewRegistry(), configProvider: test.provider,
+				labelRevisions: make(map[string]string), labelOwners: make(map[string]string),
+				pendingUninstalls: make(map[string]bool),
+			}
+			if test.labelState {
+				monitor.labelRevisions[test.previous] = "label-revision"
+				monitor.labelOwners["web"] = test.previous
+			}
+			monitor.containers.Store("web", &ContainerState{ContainerID: "web", ContainerName: "web", State: "running"})
+
+			monitor.processContainerStart(context.Background(), test.op)
+			if !reflect.DeepEqual(installer.uninstallCalls, []string{test.previous}) {
+				t.Fatalf("source switch did not uninstall %q: calls=%v", test.previous, installer.uninstallCalls)
+			}
+		})
+	}
+}
+
+func TestRemovalIntentsRecoverWithoutContainer(t *testing.T) {
+	provider := mapConfigProvider{
+		"web|@web":     {Key: "web|@web", AppName: "watchcow.dashboard-web", Deleting: true},
+		"notes|@notes": {Key: "notes|@notes", AppName: "watchcow.dashboard-notes"},
+	}
+	monitor := &Monitor{
+		configProvider: provider, opQueue: make(chan *AppOperation, 4),
+		installer:      &fakeAppInstaller{installedApps: map[string]bool{"watchcow.dashboard-notes": true}},
+		labelRevisions: map[string]string{"watchcow.label-web": "revision"},
+		labelOwners:    map[string]string{"web": "watchcow.label-web"}, pendingUninstalls: make(map[string]bool),
+	}
+	monitor.inventoryReady.Store(true)
+
+	monitor.reconcileRemovalIntents()
+	seen := make(map[string]string)
+	for len(monitor.opQueue) > 0 {
+		op := <-monitor.opQueue
+		seen[op.AppName] = op.Type
+	}
+	if seen["watchcow.dashboard-web"] != "dashboard_uninstall" || seen["watchcow.dashboard-notes"] != "orphan_uninstall" || seen["watchcow.label-web"] != "orphan_uninstall" {
+		t.Fatalf("removal intents were not recovered: %v", seen)
+	}
+	if !monitor.isPendingUninstall("watchcow.label-web") {
+		t.Fatal("orphaned label app was not persisted for retry")
+	}
+}
+
+func TestRemovalIntentsWaitForAuthoritativeInventory(t *testing.T) {
+	monitor := &Monitor{
+		configProvider: mapConfigProvider{
+			"web|@web": {Key: "web|@web", AppName: "watchcow.web", Deleting: true},
+		},
+		installer:         &fakeAppInstaller{installedApps: map[string]bool{"watchcow.web": true}},
+		opQueue:           make(chan *AppOperation, 1),
+		labelRevisions:    make(map[string]string),
+		labelOwners:       map[string]string{"web": "watchcow.web"},
+		pendingUninstalls: make(map[string]bool),
+	}
+
+	monitor.reconcileRemovalIntents()
+	if len(monitor.opQueue) != 0 || monitor.isPendingUninstall("watchcow.web") {
+		t.Fatal("failed Docker inventory was treated as authoritative removal")
+	}
+}
+
+func TestLabelAppConflictIsDetectedForRunningOwners(t *testing.T) {
+	monitor := &Monitor{}
+	labels := map[string]string{"watchcow.enable": "true", "watchcow.appname": "shared.app"}
+	monitor.containers.Store("a", &ContainerState{ContainerID: "a", ContainerName: "a", State: "running", Labels: labels})
+	monitor.containers.Store("b", &ContainerState{ContainerID: "b", ContainerName: "b", State: "running", Labels: labels})
+	if !monitor.labelAppHasMultipleOwners("a", "shared.app") {
+		t.Fatal("duplicate running label owners were not detected")
+	}
+	monitor.updateContainerState("b", nil, func(state *ContainerState) { state.State = "exited" })
+	if monitor.labelAppHasMultipleOwners("a", "shared.app") {
+		t.Fatal("stopped replacement container should not block the running owner")
+	}
+}
+
+func TestBlockedDashboardConfigIsNotQueued(t *testing.T) {
+	monitor := &Monitor{opQueue: make(chan *AppOperation, 1)}
+	monitor.queueStoredConfigOperation("web", "web", nil, &StoredConfig{
+		AppName: "watchcow.web", LastError: "需要配置端口",
+	})
+	if len(monitor.opQueue) != 0 {
+		t.Fatal("dashboard config requiring user input was queued for installation")
+	}
+	monitor.processContainerStart(context.Background(), &AppOperation{StoredConfig: &StoredConfig{
+		AppName: "watchcow.web", LastError: "需要配置端口",
+	}})
+}
+
+func TestEmptyLegacyRevisionDoesNotMatchNewStoredConfig(t *testing.T) {
+	provider := mapConfigProvider{
+		"web|@web": {Key: "web|@web", AppName: "watchcow.web", Revision: "new", Pending: true},
+	}
+	monitor := &Monitor{configProvider: provider}
+	legacy := &StoredConfig{Key: "web|@web", AppName: "watchcow.web"}
+	if monitor.isCurrentStoredConfig(legacy) || monitor.isCurrentPendingConfig(legacy) {
+		t.Fatal("empty legacy revision matched a newer stored config")
+	}
+	monitor.recordDashboardFailure(legacy, errors.New("old failure"))
+	if provider["web|@web"].LastError != "" {
+		t.Fatal("stale legacy failure was written to the new config")
+	}
+}
+
+func TestDestroyFailurePersistsCleanupAcrossRestart(t *testing.T) {
+	path := filepath.Join(t.TempDir(), labelRevisionsFilename)
+	installer := &fakeAppInstaller{installedApps: map[string]bool{"watchcow.web": true}, uninstallErr: errors.New("uninstall failed")}
+	first := &Monitor{
+		installer: installer, registry: app.NewRegistry(), labelRevisionsPath: path,
+		labelRevisions: make(map[string]string), labelOwners: make(map[string]string), pendingUninstalls: make(map[string]bool),
+	}
+	first.containers.Store("web", &ContainerState{ContainerID: "web", AppName: "watchcow.web", Installed: true})
+	first.processDestroy(&AppOperation{ContainerID: "web"})
+
+	state, err := loadPersistedMonitorState(path)
+	if err != nil {
+		t.Fatal(err)
+	}
+	second := &Monitor{
+		opQueue: make(chan *AppOperation, 1), labelRevisions: state.LabelRevisions,
+		labelOwners: state.LabelOwners, pendingUninstalls: state.PendingUninstalls,
+	}
+	second.inventoryReady.Store(true)
+	second.reconcileRemovalIntents()
+	select {
+	case op := <-second.opQueue:
+		if op.Type != "orphan_uninstall" || op.AppName != "watchcow.web" {
+			t.Fatalf("unexpected recovered cleanup: %+v", op)
+		}
+	default:
+		t.Fatal("destroy failure was not recovered after restart")
+	}
+}
+
+func TestLabelRevisionWriteFailureRollsBackMemory(t *testing.T) {
+	blocker := filepath.Join(t.TempDir(), "not-a-directory")
+	if err := os.WriteFile(blocker, []byte("x"), 0600); err != nil {
+		t.Fatal(err)
+	}
+	monitor := &Monitor{
+		labelRevisions:     map[string]string{"watchcow.web": "old"},
+		labelRevisionsPath: filepath.Join(blocker, labelRevisionsFilename),
+	}
+
+	if err := monitor.markLabelRevisionApplied("watchcow.web", "new"); err == nil {
+		t.Fatal("markLabelRevisionApplied succeeded with an invalid storage path")
+	}
+	if got := monitor.labelRevisions["watchcow.web"]; got != "old" {
+		t.Fatalf("failed mark changed memory to %q", got)
+	}
+	if err := monitor.clearLabelRevision("watchcow.web"); err == nil {
+		t.Fatal("clearLabelRevision succeeded with an invalid storage path")
+	}
+	if got := monitor.labelRevisions["watchcow.web"]; got != "old" {
+		t.Fatalf("failed clear changed memory to %q", got)
+	}
+}
+
+func TestDashboardReinstallClearsEveryPreviousOwner(t *testing.T) {
+	key := "web:latest|@web;8080/tcp:18080"
+	current := &StoredConfig{Key: key, AppName: "watchcow.web", Revision: "a", Pending: true}
+	provider := mapConfigProvider{key: current}
+	installer := &fakeAppInstaller{}
+	installer.onUninstall = func() {
+		provider[key] = &StoredConfig{Key: key, AppName: "watchcow.web", Revision: "b", Pending: true}
+	}
+	monitor := &Monitor{
+		installer:      installer,
+		registry:       app.NewRegistry(),
+		configProvider: provider,
+	}
+	for _, id := range []string{"old-container", "new-container"} {
+		monitor.containers.Store(id, &ContainerState{ContainerID: id, AppName: "watchcow.web", Installed: true})
+	}
+
+	monitor.processDashboardReinstall(context.Background(), &AppOperation{
+		ContainerID:  "new-container",
+		StoredConfig: current,
+	})
+
+	for _, id := range []string{"old-container", "new-container"} {
+		value, _ := monitor.containers.Load(id)
+		state := value.(*ContainerState)
+		if state.Installed || state.AppName != "" {
+			t.Errorf("owner %s survived successful uninstall: %+v", id, state)
+		}
+	}
+	monitor.processDestroy(&AppOperation{ContainerID: "old-container"})
+	if len(installer.uninstallCalls) != 1 {
+		t.Fatalf("destroy of cleared owner uninstalled replacement package: %v", installer.uninstallCalls)
+	}
+}
+
+func TestDashboardUninstallDoesNotRemoveLabelOwnedApp(t *testing.T) {
+	installer := &fakeAppInstaller{}
+	monitor := &Monitor{installer: installer, registry: app.NewRegistry()}
+	monitor.containers.Store("container-id", &ContainerState{
+		ContainerID:   "container-id",
+		ContainerName: "web",
+		Labels: map[string]string{
+			"watchcow.enable":  "true",
+			"watchcow.appname": "watchcow.shared",
+		},
+		AppName:   "watchcow.shared",
+		Installed: true,
+	})
+
+	monitor.processDashboardUninstall(&AppOperation{ContainerID: "container-id", AppName: "watchcow.shared"})
+	if len(installer.uninstallCalls) != 0 {
+		t.Fatalf("dashboard uninstall removed label-owned app: %v", installer.uninstallCalls)
+	}
+}
+
+func TestProcessStopUpdatesRegistryOnlyAfterSuccessfulStop(t *testing.T) {
+	for _, test := range []struct {
+		name       string
+		stopErr    error
+		wantStatus app.Status
+	}{
+		{name: "success", wantStatus: app.StatusStopped},
+		{name: "failure", stopErr: errors.New("stop failed"), wantStatus: app.StatusRunning},
+	} {
+		t.Run(test.name, func(t *testing.T) {
+			installer := &fakeAppInstaller{stopErr: test.stopErr}
+			registry := app.NewRegistry()
+			registry.Register(&app.App{AppName: "watchcow.web", Status: app.StatusRunning})
+			monitor := &Monitor{installer: installer, registry: registry}
+			monitor.containers.Store("container-id", &ContainerState{
+				ContainerID: "container-id",
+				AppName:     "watchcow.web",
+				Installed:   true,
+			})
+
+			monitor.processStop(&AppOperation{ContainerID: "container-id"})
+			if got := registry.Get("watchcow.web").Status; got != test.wantStatus {
+				t.Fatalf("registry status = %q, want %q", got, test.wantStatus)
+			}
+		})
+	}
+}
+
+func TestExistingAppStartResultControlsRegistryStatus(t *testing.T) {
+	for _, test := range []struct {
+		name       string
+		startErr   error
+		wantStatus app.Status
+	}{
+		{name: "success", wantStatus: app.StatusRunning},
+		{name: "failure", startErr: errors.New("start failed"), wantStatus: app.StatusStopped},
+	} {
+		t.Run(test.name, func(t *testing.T) {
+			installer := &fakeAppInstaller{installed: true, startErr: test.startErr}
+			registry := app.NewRegistry()
+			monitor := &Monitor{installer: installer, registry: registry}
+			monitor.containers.Store("container-id", &ContainerState{ContainerID: "container-id"})
+
+			monitor.processContainerStart(context.Background(), &AppOperation{
+				ContainerID:   "container-id",
+				ContainerName: "web",
+				StoredConfig:  &StoredConfig{AppName: "watchcow.web"},
+			})
+			if got := registry.Get("watchcow.web").Status; got != test.wantStatus {
+				t.Fatalf("registry status = %q, want %q", got, test.wantStatus)
+			}
+		})
 	}
 }
 

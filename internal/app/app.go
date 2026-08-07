@@ -62,6 +62,25 @@ func GeneratedAppName(containerName, suffix string) string {
 	return appName[:prefixLength] + "-" + hash
 }
 
+// DashboardAppName derives a package identifier from a container name and its
+// default host port. Names that lose information during sanitization receive a
+// short discriminator so inputs such as "foo_bar" and "foo-bar" cannot claim
+// the same fnOS package.
+func DashboardAppName(containerName, hostPort string) string {
+	original := strings.TrimPrefix(containerName, "/")
+	suffix := hostPort
+	if SanitizeAppNamePart(original) != original {
+		digest := sha256.Sum256([]byte(original))
+		discriminator := hex.EncodeToString(digest[:])[:8]
+		if suffix == "" {
+			suffix = discriminator
+		} else {
+			suffix += "-" + discriminator
+		}
+	}
+	return GeneratedAppName(containerName, suffix)
+}
+
 // EntryControl represents permission settings for an entry
 type EntryControl struct {
 	AccessPerm string // "editable", "readonly", "hidden" - who can access setting

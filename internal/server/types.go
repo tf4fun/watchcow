@@ -109,6 +109,8 @@ type StoredConfig struct {
 	IconBase64  string        // Base64-encoded PNG icon
 	Revision    string        // Content revision used to acknowledge the applied package
 	Pending     bool          // Desired config has not yet been successfully installed
+	Deleting    bool          // Config remains until the fnOS package is actually removed
+	LastError   string        // Last asynchronous apply/delete failure
 	CreatedAt   time.Time     // When config was created
 	UpdatedAt   time.Time     // When config was last updated
 }

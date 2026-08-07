@@ -5,20 +5,30 @@
     <meta name="viewport" content="width=device-width, initial-scale=1.0">
     <title>WatchCow 控制面板</title>
     <style>{{.BulmaCSS}}</style>
+    <style>{{.ThemeCSS}}</style>
     <script>{{.HtmxJS}}</script>
 </head>
-<body>
-    <section class="section">
-        <div class="container">
-            <h1 class="title">
-                <span>🐮</span> WatchCow
-            </h1>
-            <p class="subtitle has-text-grey">容器配置管理</p>
-
+<body class="dashboard-shell">
+    <header class="dashboard-topbar">
+        <div class="dashboard-container dashboard-topbar-inner">
+            <div class="brand-lockup">
+                <div class="brand-mark" aria-hidden="true">W</div>
+                <div>
+                    <h1 class="brand-name">WatchCow</h1>
+                    <p class="brand-context">容器应用管理</p>
+                </div>
+            </div>
+            <div class="topbar-meta">服务已连接</div>
+        </div>
+    </header>
+    <main class="dashboard-main">
+        <div class="dashboard-container">
             <div id="main-content" hx-get="containers" hx-trigger="load" hx-swap="innerHTML">
-                <progress class="progress is-small is-primary" max="100">加载中...</progress>
+                <div class="loading-state" aria-label="正在加载容器">
+                    <div class="loading-bar"></div>
+                </div>
             </div>
         </div>
-    </section>
+    </main>
 </body>
 </html>

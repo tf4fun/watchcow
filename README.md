@@ -80,6 +80,16 @@ services:
 
 启动容器后，WatchCow 会自动将其安装为 fnOS 应用。
 
+### Dashboard 简易配置
+
+未配置 `watchcow.enable=true` 的容器可以直接在 Dashboard 中点击“配置”，生成一个与早期版本兼容的不具名入口：
+
+- 有端口映射时直接选择可访问端口
+- `network_mode: host` 时手动填写容器监听端口
+- 没有映射端口时配置外部跳转地址
+
+Dashboard 面向单入口的一键构建；多入口、文件关联、入口权限等高级能力继续通过 Docker labels 配置。
+
 ### 完整配置示例
 
 ```yaml
@@ -120,7 +130,7 @@ services:
 
 | 标签 | 必需 | 默认值 | 说明 |
 |------|------|--------|------|
-| `watchcow.service_port` | 否 | 首个暴露端口 | Web UI 端口；redirect 模式下用于探测和构造内网地址 |
+| `watchcow.service_port` | 否 | 首个暴露端口 | Web UI 端口；redirect 模式下用于探测和构造内网地址；host 网络且无端口映射时需显式填写 |
 | `watchcow.protocol` | 否 | `http` | 协议 (`http`/`https`)；redirect 模式下用于内网地址 |
 | `watchcow.path` | 否 | `/` | URL 路径；redirect 模式下会合并到内网或外部目标 URL |
 | `watchcow.redirect` | 否 | - | 外部回退 URL；默认先在内网探测本地端口，探测失败或从外网访问时跳转到该地址；HTTPS fnOS 页面打开本地 HTTP 服务时浏览器无法执行探测，会直接尝试内网地址 |

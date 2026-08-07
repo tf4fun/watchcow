@@ -1,68 +1,116 @@
-<div class="table-container">
-    <table class="table is-fullwidth is-hoverable is-striped">
-        <thead>
-            <tr>
-                <th>容器名称</th>
-                <th>镜像</th>
-                <th>端口</th>
-                <th>状态</th>
-                <th>配置</th>
-                <th></th>
-            </tr>
-        </thead>
-        <tbody>
-            {{range .Containers}}
-            {{$accessible := .HasAccessiblePorts}}
-            <tr{{if not $accessible}} class="has-text-grey-light"{{end}}>
-                <td>
-                    <strong>{{.Name}}</strong>
-                </td>
-                <td>
-                    <span class="is-size-7">{{.Image}}</span>
-                </td>
-                <td>
-                    {{if .Ports}}
-                        {{range $cport, $hport := .Ports}}
-                        <span class="tag is-small">{{$cport}}→{{$hport}}</span>
+<div class="container-view"
+     hx-get="containers"
+     hx-trigger="every 3s"
+     hx-target="#main-content"
+     hx-swap="innerHTML">
+    <header class="view-header">
+        <div>
+            <h2 class="view-title">容器</h2>
+            <p class="view-subtitle">Docker 运行环境</p>
+        </div>
+        <span class="record-count">{{len .Containers}} 个容器</span>
+    </header>
+
+    <div class="data-surface">
+        <table class="table is-fullwidth container-table">
+            <colgroup>
+                <col style="width:18%">
+                <col style="width:23%">
+                <col style="width:18%">
+                <col style="width:12%">
+                <col style="width:20%">
+                <col style="width:9%">
+            </colgroup>
+            <thead>
+                <tr>
+                    <th>容器</th>
+                    <th>镜像</th>
+                    <th>端口</th>
+                    <th>运行状态</th>
+                    <th>应用状态</th>
+                    <th></th>
+                </tr>
+            </thead>
+            <tbody>
+                {{range .Containers}}
+                <tr>
+                    <td data-label="容器">
+                        <strong class="container-primary" title="{{.Name}}">{{.Name}}</strong>
+                        <span class="container-secondary" title="{{.ID}}">{{.ID}}</span>
+                    </td>
+                    <td data-label="镜像">
+                        <span class="container-primary" title="{{.Image}}">{{.Image}}</span>
+                    </td>
+                    <td data-label="端口">
+                        <div class="port-list">
+                            {{if .Ports}}
+                                {{range $cport, $hport := .Ports}}
+                                <span class="port-chip">{{$cport}} → {{$hport}}</span>
+                                {{end}}
+                            {{else if eq .NetworkMode "host"}}
+                                <span class="status-chip is-label">host 网络</span>
+                            {{else}}
+                                <span class="status-chip is-warning">无端口</span>
+                            {{end}}
+                        </div>
+                    </td>
+                    <td data-label="运行状态">
+                        <span class="status-chip {{if eq .State "running"}}is-running{{else if eq .State "exited"}}is-stopped{{end}}">
+                            {{if eq .State "running"}}运行中{{else if eq .State "exited"}}已停止{{else}}{{.State}}{{end}}
+                        </span>
+                    </td>
+                    <td data-label="应用状态">
+                        {{if .HasLabelConfig}}
+                            <span class="status-chip is-label">标签配置</span>
+                        {{else if .LegacyConfigConflict}}
+                            <span class="status-chip is-danger">旧配置冲突</span>
+                        {{else if .HasStoredConfig}}
+                            {{if .Config.Deleting}}
+                                {{if .Config.LastError}}
+                                <span class="status-chip is-danger">删除失败</span>
+                                {{else}}
+                                <span class="status-chip is-pending">删除中</span>
+                                {{end}}
+                            {{else if .Config.Pending}}
+                                {{if .Config.LastError}}
+                                <span class="status-chip is-danger">应用失败</span>
+                                {{else if eq .State "running"}}
+                                <span class="status-chip is-pending">应用中</span>
+                                {{else}}
+                                <span class="status-chip is-pending">等待容器运行</span>
+                                {{end}}
+                            {{else if .Config.LastError}}
+                                <span class="status-chip is-blocked">待修复</span>
+                            {{else}}
+                                <span class="status-chip is-applied">已应用</span>
+                            {{end}}
+                            {{if .Config.LastError}}
+                            <p class="status-detail" title="{{.Config.LastError}}">{{.Config.LastError}}</p>
+                            {{end}}
+                        {{else}}
+                            <span class="status-chip">未配置</span>
                         {{end}}
-                    {{else if eq .NetworkMode "host"}}
-                        <span class="tag is-info is-small">host 网络</span>
-                    {{else}}
-                        <span class="tag is-warning is-small">无端口</span>
-                    {{end}}
-                </td>
-                <td>
-                    <span class="tag is-small {{if eq .State "running"}}is-success{{else if eq .State "exited"}}is-warning{{end}}">
-                        {{if eq .State "running"}}运行中{{else if eq .State "exited"}}已停止{{else}}{{.State}}{{end}}
-                    </span>
-                </td>
-                <td>
-                    {{if .HasLabelConfig}}
-                        <span class="tag is-info is-small">标签配置</span>
-                    {{else if .HasStoredConfig}}
-                        <span class="tag is-success is-small">已配置</span>
-                    {{else}}
-                        <span class="tag is-small">未配置</span>
-                    {{end}}
-                </td>
-                <td class="has-text-right">
-                    {{if and $accessible (not .HasLabelConfig)}}
-                    <button class="button is-small is-primary is-outlined"
-                            hx-get="containers/{{.ID}}"
-                            hx-target="#main-content"
-                            hx-swap="innerHTML">
-                        配置
-                    </button>
-                    {{end}}
-                </td>
-            </tr>
-            {{else}}
-            <tr>
-                <td colspan="6" class="has-text-centered has-text-grey">
-                    未找到容器
-                </td>
-            </tr>
-            {{end}}
-        </tbody>
-    </table>
+                    </td>
+                    <td data-label="操作" class="has-text-right action-cell {{if .HasLabelConfig}}is-empty{{end}}">
+                        {{if not .HasLabelConfig}}
+                        <button class="button is-small is-primary is-outlined configure-button"
+                                hx-get="containers/{{.ID}}"
+                                hx-target="#main-content"
+                                hx-swap="innerHTML show:top">
+                            配置
+                        </button>
+                        {{end}}
+                    </td>
+                </tr>
+                {{else}}
+                <tr>
+                    <td colspan="6" class="empty-state">
+                        <strong>未找到容器</strong>
+                        <span>Docker 中暂无可显示的容器</span>
+                    </td>
+                </tr>
+                {{end}}
+            </tbody>
+        </table>
+    </div>
 </div>

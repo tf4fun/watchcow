@@ -147,6 +147,23 @@ func TestGeneratedAppNameBoundsLongAutomaticNames(t *testing.T) {
 	}
 }
 
+func TestDashboardAppNameDisambiguatesSanitizedNames(t *testing.T) {
+	plain := DashboardAppName("foo-bar", "8080")
+	sanitized := DashboardAppName("foo_bar", "8080")
+	if plain != "watchcow.foo-bar.8080" {
+		t.Fatalf("plain name changed: %q", plain)
+	}
+	if sanitized == plain {
+		t.Fatalf("sanitized names collided: %q", sanitized)
+	}
+	if sanitized != DashboardAppName("foo_bar", "8080") {
+		t.Fatalf("dashboard name is not deterministic: %q", sanitized)
+	}
+	if upper := DashboardAppName("Foo", "8080"); upper == DashboardAppName("foo", "8080") {
+		t.Fatalf("case-normalized names collided: %q", upper)
+	}
+}
+
 func TestRegistry_RegisterAndGet(t *testing.T) {
 	registry := NewRegistry()
 

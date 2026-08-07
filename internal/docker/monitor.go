@@ -2,15 +2,20 @@ package docker
 
 import (
 	"context"
+	"crypto/sha256"
+	"encoding/hex"
+	"encoding/json"
 	"errors"
 	"fmt"
 	"log/slog"
 	"maps"
 	"os"
+	"path/filepath"
 	"sort"
 	"strconv"
 	"strings"
 	"sync"
+	"sync/atomic"
 	"time"
 
 	"github.com/docker/docker/api/types/container"
@@ -30,8 +35,18 @@ type ConfigProvider interface {
 	GetByKey(key string) *StoredConfig
 	// GetCompatibleCandidates returns configs saved with legacy protocol-less keys.
 	GetCompatibleCandidates(image string, identityPorts map[string]string, portOptions map[string][]string) []StoredConfigMatch
+	// GetNamedCandidates returns configs owned by the same stable container name.
+	GetNamedCandidates(containerName string) []StoredConfigMatch
+	// GetDeletingConfigs returns durable dashboard uninstall intents.
+	GetDeletingConfigs() []StoredConfigMatch
+	// GetAllConfigs returns dashboard configs for applied-owner reconciliation.
+	GetAllConfigs() []StoredConfigMatch
 	// MarkApplied clears Pending only if the stored revision still matches.
 	MarkApplied(key, revision string) error
+	// MarkFailed records an asynchronous apply/delete failure.
+	MarkFailed(key, revision, message string) error
+	// CompleteDelete removes deleting configs after the fnOS package is gone.
+	CompleteDelete(appName string) error
 	// MigrateLegacy moves one uniquely-owned legacy config to its canonical key.
 	MigrateLegacy(oldKey, newKey string) (*StoredConfig, error)
 }
@@ -61,6 +76,8 @@ type StoredConfig struct {
 	IconBase64  string
 	Revision    string
 	Pending     bool
+	Deleting    bool
+	LastError   string
 }
 
 // StoredEntry represents a saved entry configuration.
@@ -81,25 +98,29 @@ type StoredEntry struct {
 
 // AppOperation represents an operation to be processed serially
 type AppOperation struct {
-	Type          string // "install", "start", "stop", "destroy", "container_start"
-	AppName       string
-	AppDir        string
-	ContainerID   string
-	ContainerName string
-	Labels        map[string]string
-	StoredConfig  *StoredConfig // Config from dashboard storage (if no labels)
-	ConfigKey     string        // Canonical storage key for stale uninstall detection
-	ResultCh      chan error
+	Type            string // "install", "start", "stop", "destroy", "container_start"
+	AppName         string
+	AppDir          string
+	ContainerID     string
+	ContainerName   string
+	Labels          map[string]string
+	StoredConfig    *StoredConfig // Config from dashboard storage (if no labels)
+	ConfigKey       string        // Canonical storage key for stale uninstall detection
+	LabelRevision   string        // Desired label config captured when the operation was queued
+	PreviousAppName string        // Last applied app from the other configuration source
+	ForceReconcile  bool          // Rebuild even when dashboard content itself is not pending
+	ResultCh        chan error
 }
 
 // Monitor watches Docker containers and manages fnOS app installation
 type Monitor struct {
-	cli            *client.Client
-	generator      *fpkgen.Generator
-	installer      appInstaller
-	configProvider ConfigProvider
-	stopCh         chan struct{}
-	stopOnce       sync.Once
+	cli             *client.Client
+	generator       *fpkgen.Generator
+	installer       appInstaller
+	configProvider  ConfigProvider
+	stopCh          chan struct{}
+	stopOnce        sync.Once
+	inventoryScanMu sync.Mutex
 
 	// Track all container states
 	containers sync.Map // map[containerID]*ContainerState
@@ -109,6 +130,21 @@ type Monitor struct {
 
 	// Operation queue for serializing all state changes and appcenter-cli calls
 	opQueue chan *AppOperation
+
+	labelRevisionsMu   sync.Mutex
+	labelRevisions     map[string]string // appName -> last successfully installed label revision
+	labelOwners        map[string]string // containerName -> last successfully installed label app
+	pendingUninstalls  map[string]bool   // appName -> durable orphan cleanup intent
+	labelRevisionsPath string
+	inventoryReady     atomic.Bool // true after Docker returned one authoritative container list
+}
+
+const labelRevisionsFilename = "label-revisions.json"
+
+type persistedMonitorState struct {
+	LabelRevisions    map[string]string `json:"label_revisions"`
+	LabelOwners       map[string]string `json:"label_owners"`
+	PendingUninstalls map[string]bool   `json:"pending_uninstalls"`
 }
 
 // ContainerState tracks the state of a container
@@ -200,6 +236,13 @@ func NewMonitor() (*Monitor, error) {
 		slog.Info("Installer ready, apps will be auto-installed via appcenter-cli")
 	}
 
+	labelRevisionsPath := defaultLabelRevisionsPath()
+	persistedState, err := loadPersistedMonitorState(labelRevisionsPath)
+	if err != nil {
+		slog.Warn("Failed to load applied label revisions; installed label apps will be reconciled", "path", labelRevisionsPath, "error", err)
+		persistedState = newPersistedMonitorState()
+	}
+
 	return &Monitor{
 		cli:       cli,
 		generator: generator,
@@ -207,7 +250,252 @@ func NewMonitor() (*Monitor, error) {
 		stopCh:    make(chan struct{}),
 		registry:  app.NewRegistry(),
 		opQueue:   make(chan *AppOperation, 100),
+
+		labelRevisions:     persistedState.LabelRevisions,
+		labelOwners:        persistedState.LabelOwners,
+		pendingUninstalls:  persistedState.PendingUninstalls,
+		labelRevisionsPath: labelRevisionsPath,
 	}, nil
+}
+
+func defaultLabelRevisionsPath() string {
+	if pkgVar := os.Getenv("TRIM_PKGVAR"); pkgVar != "" {
+		return filepath.Join(pkgVar, labelRevisionsFilename)
+	}
+	if pkgEtc := os.Getenv("TRIM_PKGETC"); pkgEtc != "" {
+		return filepath.Join(pkgEtc, labelRevisionsFilename)
+	}
+	return filepath.Join("/tmp", "watchcow", labelRevisionsFilename)
+}
+
+func newPersistedMonitorState() persistedMonitorState {
+	return persistedMonitorState{
+		LabelRevisions:    make(map[string]string),
+		LabelOwners:       make(map[string]string),
+		PendingUninstalls: make(map[string]bool),
+	}
+}
+
+func loadPersistedMonitorState(path string) (persistedMonitorState, error) {
+	state := newPersistedMonitorState()
+	data, err := os.ReadFile(path)
+	if err != nil {
+		if os.IsNotExist(err) {
+			return state, nil
+		}
+		return state, err
+	}
+	var persisted persistedMonitorState
+	if err := json.Unmarshal(data, &persisted); err == nil &&
+		(persisted.LabelRevisions != nil || persisted.LabelOwners != nil || persisted.PendingUninstalls != nil) {
+		if persisted.LabelRevisions != nil {
+			state.LabelRevisions = persisted.LabelRevisions
+		}
+		if persisted.LabelOwners != nil {
+			state.LabelOwners = persisted.LabelOwners
+		}
+		if persisted.PendingUninstalls != nil {
+			state.PendingUninstalls = persisted.PendingUninstalls
+		}
+		return state, nil
+	}
+
+	// Compatibility with the first revision-only file format.
+	if err := json.Unmarshal(data, &state.LabelRevisions); err != nil {
+		return newPersistedMonitorState(), err
+	}
+	return state, nil
+}
+
+func loadLabelRevisions(path string) (map[string]string, error) {
+	state, err := loadPersistedMonitorState(path)
+	return state.LabelRevisions, err
+}
+
+func (m *Monitor) saveLabelRevisionsLocked() error {
+	if m.labelRevisionsPath == "" {
+		return nil
+	}
+	if err := os.MkdirAll(filepath.Dir(m.labelRevisionsPath), 0755); err != nil {
+		return err
+	}
+	data, err := json.Marshal(persistedMonitorState{
+		LabelRevisions:    m.labelRevisions,
+		LabelOwners:       m.labelOwners,
+		PendingUninstalls: m.pendingUninstalls,
+	})
+	if err != nil {
+		return err
+	}
+	tmpPath := m.labelRevisionsPath + ".tmp"
+	file, err := os.OpenFile(tmpPath, os.O_CREATE|os.O_TRUNC|os.O_WRONLY, 0600)
+	if err != nil {
+		return err
+	}
+	if _, err := file.Write(data); err != nil {
+		file.Close()
+		os.Remove(tmpPath)
+		return err
+	}
+	if err := file.Sync(); err != nil {
+		file.Close()
+		os.Remove(tmpPath)
+		return err
+	}
+	if err := file.Close(); err != nil {
+		os.Remove(tmpPath)
+		return err
+	}
+	if err := os.Rename(tmpPath, m.labelRevisionsPath); err != nil {
+		os.Remove(tmpPath)
+		return err
+	}
+	return nil
+}
+
+func (m *Monitor) isLabelRevisionApplied(appName, revision string) bool {
+	if appName == "" || revision == "" {
+		return false
+	}
+	m.labelRevisionsMu.Lock()
+	defer m.labelRevisionsMu.Unlock()
+	return m.labelRevisions[appName] == revision
+}
+
+func (m *Monitor) markLabelRevisionApplied(appName, revision string) error {
+	return m.markLabelRevisionAppliedForContainer(appName, revision, "")
+}
+
+func (m *Monitor) markLabelRevisionAppliedForContainer(appName, revision, containerName string) error {
+	if appName == "" || revision == "" {
+		return nil
+	}
+	m.labelRevisionsMu.Lock()
+	defer m.labelRevisionsMu.Unlock()
+	m.ensurePersistedStateLocked()
+	previousRevisions := maps.Clone(m.labelRevisions)
+	previousOwners := maps.Clone(m.labelOwners)
+	previousUninstalls := maps.Clone(m.pendingUninstalls)
+	m.labelRevisions[appName] = revision
+	if containerName != "" {
+		m.labelOwners[strings.TrimPrefix(containerName, "/")] = appName
+	}
+	delete(m.pendingUninstalls, appName)
+	if err := m.saveLabelRevisionsLocked(); err != nil {
+		m.labelRevisions = previousRevisions
+		m.labelOwners = previousOwners
+		m.pendingUninstalls = previousUninstalls
+		return err
+	}
+	return nil
+}
+
+func (m *Monitor) clearLabelRevision(appName string) error {
+	if appName == "" {
+		return nil
+	}
+	m.labelRevisionsMu.Lock()
+	defer m.labelRevisionsMu.Unlock()
+	m.ensurePersistedStateLocked()
+	found := false
+	if _, ok := m.labelRevisions[appName]; ok {
+		found = true
+	}
+	for _, ownedApp := range m.labelOwners {
+		if ownedApp == appName {
+			found = true
+			break
+		}
+	}
+	if !found && !m.pendingUninstalls[appName] {
+		return nil
+	}
+	previousRevisions := maps.Clone(m.labelRevisions)
+	previousOwners := maps.Clone(m.labelOwners)
+	previousUninstalls := maps.Clone(m.pendingUninstalls)
+	delete(m.labelRevisions, appName)
+	delete(m.pendingUninstalls, appName)
+	for containerName, ownedApp := range m.labelOwners {
+		if ownedApp == appName {
+			delete(m.labelOwners, containerName)
+		}
+	}
+	if err := m.saveLabelRevisionsLocked(); err != nil {
+		m.labelRevisions = previousRevisions
+		m.labelOwners = previousOwners
+		m.pendingUninstalls = previousUninstalls
+		return err
+	}
+	return nil
+}
+
+func (m *Monitor) ensurePersistedStateLocked() {
+	if m.labelRevisions == nil {
+		m.labelRevisions = make(map[string]string)
+	}
+	if m.labelOwners == nil {
+		m.labelOwners = make(map[string]string)
+	}
+	if m.pendingUninstalls == nil {
+		m.pendingUninstalls = make(map[string]bool)
+	}
+}
+
+func (m *Monitor) hasLabelRevision(appName string) bool {
+	if appName == "" {
+		return false
+	}
+	m.labelRevisionsMu.Lock()
+	defer m.labelRevisionsMu.Unlock()
+	return m.labelRevisions[appName] != ""
+}
+
+func (m *Monitor) appliedLabelAppForContainer(containerName string) string {
+	m.labelRevisionsMu.Lock()
+	defer m.labelRevisionsMu.Unlock()
+	return m.labelOwners[strings.TrimPrefix(containerName, "/")]
+}
+
+func (m *Monitor) markPendingUninstall(appName string) error {
+	if appName == "" {
+		return nil
+	}
+	m.labelRevisionsMu.Lock()
+	defer m.labelRevisionsMu.Unlock()
+	m.ensurePersistedStateLocked()
+	if m.pendingUninstalls[appName] {
+		return nil
+	}
+	previous := maps.Clone(m.pendingUninstalls)
+	m.pendingUninstalls[appName] = true
+	if err := m.saveLabelRevisionsLocked(); err != nil {
+		m.pendingUninstalls = previous
+		return err
+	}
+	return nil
+}
+
+func (m *Monitor) pendingUninstallApps() []string {
+	m.labelRevisionsMu.Lock()
+	defer m.labelRevisionsMu.Unlock()
+	apps := make([]string, 0, len(m.pendingUninstalls))
+	for appName := range m.pendingUninstalls {
+		apps = append(apps, appName)
+	}
+	sort.Strings(apps)
+	return apps
+}
+
+func (m *Monitor) isPendingUninstall(appName string) bool {
+	m.labelRevisionsMu.Lock()
+	defer m.labelRevisionsMu.Unlock()
+	return m.pendingUninstalls[appName]
+}
+
+func (m *Monitor) labelOwnerSnapshot() map[string]string {
+	m.labelRevisionsMu.Lock()
+	defer m.labelRevisionsMu.Unlock()
+	return maps.Clone(m.labelOwners)
 }
 
 // SetConfigProvider sets the config provider for dashboard storage lookup.
@@ -223,6 +511,7 @@ func (m *Monitor) TriggerInstall(containerID string, storedConfig *StoredConfig)
 	v, ok := m.containers.Load(containerID)
 	if !ok {
 		slog.Debug("Container not found for trigger install", "id", containerID)
+		m.recordDashboardFailure(storedConfig, fmt.Errorf("container not found"))
 		return
 	}
 	state := v.(*ContainerState)
@@ -236,25 +525,29 @@ func (m *Monitor) TriggerInstall(containerID string, storedConfig *StoredConfig)
 	// If already installed, uninstall first then reinstall with new config
 	if state.Installed && state.AppName != "" {
 		slog.Info("Config updated, reinstalling app", "container", state.ContainerName, "app", state.AppName)
-		m.queueOperation(&AppOperation{
+		if !m.queueOperation(&AppOperation{
 			Type:          "dashboard_reinstall",
 			ContainerID:   containerID,
 			ContainerName: state.ContainerName,
 			AppName:       state.AppName,
 			Labels:        maps.Clone(state.Labels),
 			StoredConfig:  storedConfig,
-		})
+		}) {
+			m.recordDashboardFailure(storedConfig, fmt.Errorf("operation queue full"))
+		}
 		return
 	}
 
 	slog.Info("Triggering app install from dashboard", "container", state.ContainerName)
-	m.queueOperation(&AppOperation{
+	if !m.queueOperation(&AppOperation{
 		Type:          "dashboard_install",
 		ContainerID:   containerID,
 		ContainerName: state.ContainerName,
 		Labels:        maps.Clone(state.Labels),
 		StoredConfig:  storedConfig,
-	})
+	}) {
+		m.recordDashboardFailure(storedConfig, fmt.Errorf("operation queue full"))
+	}
 }
 
 // GetContainerByKey finds a container by its key (image|ports).
@@ -333,6 +626,20 @@ func (m *Monitor) getStoredConfigForPorts(containerID, image string, ports map[s
 	currentKey := makeContainerKeyForName(image, containerName, ports)
 	if config := m.configProvider.GetByKey(currentKey); config != nil {
 		return config
+	}
+	if containerName != "" {
+		namedMatches := m.configProvider.GetNamedCandidates(containerName)
+		if len(namedMatches) == 1 {
+			config, err := m.configProvider.MigrateLegacy(namedMatches[0].Key, currentKey)
+			if err != nil {
+				slog.Error("Failed to migrate named dashboard key", "old_key", namedMatches[0].Key, "new_key", currentKey, "error", err)
+				return nil
+			}
+			return config
+		}
+		if len(namedMatches) > 1 {
+			return nil
+		}
 	}
 	matches := m.configProvider.GetCompatibleCandidates(image, ports, portOptions)
 	if len(matches) != 1 {
@@ -426,6 +733,53 @@ func slicesContains(values []string, target string) bool {
 	return false
 }
 
+type labelConfigSnapshot struct {
+	ContainerName string            `json:"container_name"`
+	Image         string            `json:"image"`
+	NetworkMode   string            `json:"network_mode"`
+	WebPorts      map[string]string `json:"web_ports"`
+	Labels        map[string]string `json:"labels"`
+}
+
+func labelConfigRevision(containerName, image, networkMode string, webPorts, labels map[string]string) string {
+	watchcowLabels := make(map[string]string)
+	for key, value := range labels {
+		if strings.HasPrefix(key, "watchcow.") {
+			watchcowLabels[key] = value
+		}
+	}
+	payload, err := json.Marshal(labelConfigSnapshot{
+		ContainerName: strings.TrimPrefix(containerName, "/"),
+		Image:         image,
+		NetworkMode:   networkMode,
+		WebPorts:      webPorts,
+		Labels:        watchcowLabels,
+	})
+	if err != nil {
+		return ""
+	}
+	digest := sha256.Sum256(payload)
+	return hex.EncodeToString(digest[:16])
+}
+
+func labelRevisionForState(state *ContainerState) string {
+	if state == nil || !shouldInstall(state.Labels) {
+		return ""
+	}
+	return labelConfigRevision(state.ContainerName, state.Image, state.NetworkMode, webPortsForState(state), state.Labels)
+}
+
+func (m *Monitor) isCurrentLabelRevision(containerID, revision string) bool {
+	if revision == "" {
+		return true
+	}
+	value, ok := m.containers.Load(containerID)
+	if !ok {
+		return false
+	}
+	return labelRevisionForState(value.(*ContainerState)) == revision
+}
+
 // runOperationWorker serializes app lifecycle and appcenter-cli operations.
 func (m *Monitor) runOperationWorker(ctx context.Context) {
 	for {
@@ -453,6 +807,9 @@ func (m *Monitor) runOperationWorker(ctx context.Context) {
 
 			case "dashboard_uninstall":
 				m.processDashboardUninstall(op)
+
+			case "orphan_uninstall":
+				m.processOrphanUninstall(op)
 			}
 		}
 	}
@@ -464,8 +821,24 @@ func (m *Monitor) processContainerStart(ctx context.Context, op *AppOperation) {
 }
 
 func (m *Monitor) processContainerStartWithMode(ctx context.Context, op *AppOperation, forceInstall bool) {
+	if op.StoredConfig != nil && op.StoredConfig.Deleting {
+		slog.Info("Skipping apply for dashboard config pending deletion", "app", op.StoredConfig.AppName)
+		return
+	}
+	if op.StoredConfig != nil && op.StoredConfig.LastError != "" && !op.StoredConfig.Pending {
+		slog.Info("Skipping dashboard config that requires user input", "app", op.StoredConfig.AppName, "error", op.StoredConfig.LastError)
+		return
+	}
 	if op.StoredConfig != nil && op.StoredConfig.Pending && !m.isCurrentPendingConfig(op.StoredConfig) {
 		slog.Info("Skipping stale dashboard config operation", "app", op.StoredConfig.AppName, "revision", op.StoredConfig.Revision)
+		return
+	}
+	if op.StoredConfig != nil && !op.StoredConfig.Pending && !m.isCurrentStoredConfig(op.StoredConfig) {
+		slog.Info("Skipping stale dashboard config operation", "app", op.StoredConfig.AppName, "revision", op.StoredConfig.Revision)
+		return
+	}
+	if op.StoredConfig == nil && op.LabelRevision != "" && !m.isCurrentLabelRevision(op.ContainerID, op.LabelRevision) {
+		slog.Info("Skipping stale label config operation", "container", op.ContainerName, "revision", op.LabelRevision)
 		return
 	}
 
@@ -475,6 +848,28 @@ func (m *Monitor) processContainerStartWithMode(ctx context.Context, op *AppOper
 		appName = op.StoredConfig.AppName
 	} else {
 		appName = getAppNameFromLabels(op.Labels, op.ContainerName)
+		if m.labelAppHasMultipleOwners(op.ContainerID, appName) {
+			slog.Error("Skipping label app with conflicting owners; set a unique watchcow.appname", "app", appName, "container", op.ContainerName)
+			return
+		}
+	}
+	if !forceInstall {
+		previousAppName := op.PreviousAppName
+		if previousAppName == "" && op.StoredConfig != nil {
+			previousAppName = m.appliedLabelAppForContainer(op.ContainerName)
+		}
+		if m.installer != nil && previousAppName != "" && previousAppName != appName && m.installer.IsAppInstalled(previousAppName) {
+			op.PreviousAppName = previousAppName
+			op.ForceReconcile = true
+			m.processDashboardReinstall(ctx, op)
+			return
+		}
+		if op.StoredConfig != nil && m.hasLabelRevision(appName) {
+			op.PreviousAppName = appName
+			op.ForceReconcile = true
+			m.processDashboardReinstall(ctx, op)
+			return
+		}
 	}
 
 	// Check if already installed in fnOS
@@ -484,24 +879,15 @@ func (m *Monitor) processContainerStartWithMode(ctx context.Context, op *AppOper
 			m.processDashboardReinstall(ctx, op)
 			return
 		}
+		if op.StoredConfig == nil && op.LabelRevision != "" && !m.isLabelRevisionApplied(appName, op.LabelRevision) {
+			op.AppName = appName
+			m.processDashboardReinstall(ctx, op)
+			return
+		}
 		// Already installed, transfer ownership to this new container.
 		// Clear the app association from any previous container so that when the
 		// old container is later destroyed it does not uninstall the live app.
-		m.containers.Range(func(k, val any) bool {
-			if k.(string) == op.ContainerID {
-				return true
-			}
-			other := val.(*ContainerState)
-			if other.AppName == appName {
-				m.updateContainerState(k.(string), nil, func(state *ContainerState) {
-					if state.AppName == appName {
-						state.AppName = ""
-						state.Installed = false
-					}
-				})
-			}
-			return true
-		})
+		m.clearAppOwnership(appName, op.ContainerID)
 		slog.Info("App already installed, starting", "app", appName)
 		m.updateContainerState(op.ContainerID, nil, func(state *ContainerState) {
 			state.AppName = appName
@@ -510,11 +896,25 @@ func (m *Monitor) processContainerStartWithMode(ctx context.Context, op *AppOper
 		// Register app in registry
 		if op.StoredConfig != nil {
 			m.registerAppFromStoredConfig(op.StoredConfig, op.ContainerID, op.ContainerName)
+			if err := m.clearLabelRevision(appName); err != nil {
+				slog.Error("Failed to clear label revision after dashboard ownership transfer", "app", appName, "error", err)
+			}
 		} else {
 			m.registerAppFromLabels(appName, op.ContainerID, op.ContainerName, op.Labels)
+			if op.LabelRevision != "" {
+				if err := m.markLabelRevisionAppliedForContainer(appName, op.LabelRevision, op.ContainerName); err != nil {
+					slog.Error("Failed to persist reused label ownership", "app", appName, "error", err)
+				}
+			}
 		}
 		if m.installer != nil {
-			m.installer.StartApp(appName)
+			m.registry.UpdateStatus(appName, app.StatusInstalled)
+			if err := m.installer.StartApp(appName); err != nil {
+				slog.Error("Failed to start fnOS app", "app", appName, "error", err)
+				m.registry.UpdateStatus(appName, app.StatusStopped)
+			} else {
+				m.registry.UpdateStatus(appName, app.StatusRunning)
+			}
 		}
 		return
 	}
@@ -542,10 +942,22 @@ func (m *Monitor) processContainerStartWithMode(ctx context.Context, op *AppOper
 
 	if err != nil {
 		slog.Error("Failed to generate fnOS app", "container", op.ContainerName, "error", err)
+		m.recordDashboardFailure(op.StoredConfig, err)
 		return
 	}
-	if op.StoredConfig != nil && op.StoredConfig.Pending && !m.isCurrentPendingConfig(op.StoredConfig) {
-		slog.Info("Discarding package generated for stale dashboard config", "app", config.AppName, "revision", op.StoredConfig.Revision)
+	if op.StoredConfig != nil {
+		current := m.isCurrentStoredConfig(op.StoredConfig)
+		if op.StoredConfig.Pending {
+			current = m.isCurrentPendingConfig(op.StoredConfig)
+		}
+		if !current {
+			slog.Info("Discarding package generated for stale dashboard config", "app", config.AppName, "revision", op.StoredConfig.Revision)
+			os.RemoveAll(appDir)
+			return
+		}
+	}
+	if op.StoredConfig == nil && op.LabelRevision != "" && !m.isCurrentLabelRevision(op.ContainerID, op.LabelRevision) {
+		slog.Info("Discarding package generated for stale label config", "app", config.AppName, "revision", op.LabelRevision)
 		os.RemoveAll(appDir)
 		return
 	}
@@ -562,16 +974,27 @@ func (m *Monitor) processContainerStartWithMode(ctx context.Context, op *AppOper
 	if m.installer != nil {
 		if err := m.installer.InstallLocal(appDir, op.Labels); err != nil {
 			slog.Error("Failed to install fnOS app", "app", config.AppName, "error", err)
+			m.recordDashboardFailure(op.StoredConfig, err)
 		} else {
+			m.clearAppOwnership(config.AppName, op.ContainerID)
 			m.updateContainerState(op.ContainerID, nil, func(state *ContainerState) {
 				state.Installed = true
 				state.AppName = config.AppName
 			})
 			// Register app in registry
 			m.registerAppFromConfig(config, op.ContainerID, op.ContainerName)
-			if op.StoredConfig != nil && m.configProvider != nil {
-				if err := m.configProvider.MarkApplied(op.StoredConfig.Key, op.StoredConfig.Revision); err != nil {
-					slog.Error("Failed to mark dashboard config as applied", "app", config.AppName, "error", err)
+			if op.StoredConfig != nil {
+				if m.configProvider != nil {
+					if err := m.configProvider.MarkApplied(op.StoredConfig.Key, op.StoredConfig.Revision); err != nil {
+						slog.Error("Failed to mark dashboard config as applied", "app", config.AppName, "error", err)
+					}
+				}
+				if err := m.clearLabelRevision(config.AppName); err != nil {
+					slog.Error("Failed to clear label revision after dashboard install", "app", config.AppName, "error", err)
+				}
+			} else if op.LabelRevision != "" {
+				if err := m.markLabelRevisionAppliedForContainer(config.AppName, op.LabelRevision, op.ContainerName); err != nil {
+					slog.Error("Failed to persist applied label revision", "app", config.AppName, "error", err)
 				}
 			}
 			slog.Info("Successfully installed fnOS app", "app", config.AppName)
@@ -593,11 +1016,48 @@ func (m *Monitor) processDashboardInstall(ctx context.Context, op *AppOperation)
 }
 
 func (m *Monitor) isCurrentPendingConfig(config *StoredConfig) bool {
-	if config == nil || config.Key == "" || config.Revision == "" || m.configProvider == nil {
+	if config == nil || config.Key == "" || m.configProvider == nil {
 		return true
 	}
 	current := m.configProvider.GetByKey(config.Key)
-	return current != nil && current.Pending && current.Revision == config.Revision
+	return current != nil && current.Pending && !current.Deleting && current.Revision == config.Revision
+}
+
+func (m *Monitor) isCurrentStoredConfig(config *StoredConfig) bool {
+	if config == nil || config.Key == "" || m.configProvider == nil {
+		return true
+	}
+	current := m.configProvider.GetByKey(config.Key)
+	if current == nil || current.Deleting {
+		return false
+	}
+	return current.Revision == config.Revision
+}
+
+func (m *Monitor) recordDashboardFailure(config *StoredConfig, err error) {
+	if config == nil || err == nil || m.configProvider == nil {
+		return
+	}
+	current := m.configProvider.GetByKey(config.Key)
+	if current == nil || current.Deleting || current.Revision != config.Revision {
+		return
+	}
+	if markErr := m.configProvider.MarkFailed(config.Key, config.Revision, err.Error()); markErr != nil {
+		slog.Error("Failed to persist dashboard operation error", "app", config.AppName, "error", markErr)
+	}
+}
+
+func (m *Monitor) recordDashboardDeleteFailure(configKey, message string) {
+	if configKey == "" || message == "" || m.configProvider == nil {
+		return
+	}
+	current := m.configProvider.GetByKey(configKey)
+	if current == nil || !current.Deleting {
+		return
+	}
+	if err := m.configProvider.MarkFailed(configKey, current.Revision, message); err != nil {
+		slog.Error("Failed to persist dashboard delete error", "app", current.AppName, "error", err)
+	}
 }
 
 func (m *Monitor) installedAppName(containerID string) string {
@@ -610,6 +1070,28 @@ func (m *Monitor) installedAppName(containerID string) string {
 		return ""
 	}
 	return state.AppName
+}
+
+func (m *Monitor) clearAppOwnership(appName, exceptContainerID string) {
+	if appName == "" {
+		return
+	}
+	m.containers.Range(func(key, value any) bool {
+		containerID := key.(string)
+		if containerID == exceptContainerID {
+			return true
+		}
+		state := value.(*ContainerState)
+		if state.AppName == appName {
+			m.updateContainerState(containerID, nil, func(current *ContainerState) {
+				if current.AppName == appName {
+					current.AppName = ""
+					current.Installed = false
+				}
+			})
+		}
+		return true
+	})
 }
 
 // generateFromStoredConfig generates an app package from stored config.
@@ -667,28 +1149,15 @@ func appConfigFromStored(storedCfg *StoredConfig, containerID, containerName, im
 
 // registerAppFromStoredConfig creates and registers an App instance from stored config.
 func (m *Monitor) registerAppFromStoredConfig(storedCfg *StoredConfig, containerID, containerName string) {
-	appInstance := &app.App{
-		AppName:       storedCfg.AppName,
-		DisplayName:   storedCfg.DisplayName,
-		Description:   storedCfg.Description,
-		Version:       storedCfg.Version,
-		Maintainer:    storedCfg.Maintainer,
-		ContainerID:   containerID,
-		ContainerName: containerName,
-		Icon:          storedCfg.IconBase64,
-		Status:        app.StatusRunning,
-		Entries:       make([]app.Entry, 0, len(storedCfg.Entries)),
-	}
+	image := ""
 	if value, ok := m.containers.Load(containerID); ok {
-		appInstance.Image = value.(*ContainerState).Image
+		image = value.(*ContainerState).Image
 	}
+	config := appConfigFromStored(storedCfg, containerID, containerName, image)
+	appInstance := cloneAppConfig(config)
+	appInstance.Status = app.StatusRunning
 
-	for _, e := range storedCfg.Entries {
-		appInstance.Entries = append(appInstance.Entries, appEntryFromStored(e, storedCfg.IconBase64))
-	}
-	populateLegacyEntryFields(appInstance)
-
-	m.registry.Register(appInstance)
+	m.registry.Register(&appInstance)
 	slog.Debug("Registered app in registry from stored config", "app", storedCfg.AppName, "entries", len(appInstance.Entries))
 }
 
@@ -727,12 +1196,19 @@ func (m *Monitor) processStop(op *AppOperation) {
 	}
 	slog.Info("Stopping fnOS app", "app", state.AppName)
 	if m.installer != nil {
-		m.installer.StopApp(state.AppName)
+		if err := m.installer.StopApp(state.AppName); err != nil {
+			slog.Error("Failed to stop fnOS app", "app", state.AppName, "error", err)
+			return
+		}
+		m.registry.UpdateStatus(state.AppName, app.StatusStopped)
 	}
 }
 
 // processDestroy handles destroy operation
 func (m *Monitor) processDestroy(op *AppOperation) {
+	m.inventoryScanMu.Lock()
+	defer m.inventoryScanMu.Unlock()
+
 	v, exists := m.containers.Load(op.ContainerID)
 	if !exists {
 		slog.Debug("Container not tracked, skipping destroy", "id", op.ContainerID)
@@ -742,6 +1218,11 @@ func (m *Monitor) processDestroy(op *AppOperation) {
 
 	appName := state.AppName
 	wasInstalled := state.Installed
+	if wasInstalled {
+		if err := m.markPendingUninstall(appName); err != nil {
+			slog.Error("Failed to persist uninstall intent after container removal", "app", appName, "error", err)
+		}
+	}
 
 	// Remove from tracking
 	m.containers.Delete(op.ContainerID)
@@ -751,44 +1232,227 @@ func (m *Monitor) processDestroy(op *AppOperation) {
 	slog.Debug("Unregistered app from registry", "app", appName)
 
 	// Uninstall if was installed
-	if wasInstalled && m.installer != nil {
-		slog.Info("Uninstalling fnOS app", "app", appName)
-		if err := m.installer.Uninstall(appName); err != nil {
-			slog.Error("Failed to uninstall fnOS app after container removal", "app", appName, "error", err)
+	if wasInstalled {
+		if m.installer != nil {
+			slog.Info("Uninstalling fnOS app", "app", appName)
+			if err := m.installer.Uninstall(appName); err != nil {
+				slog.Error("Failed to uninstall fnOS app after container removal", "app", appName, "error", err)
+			} else if err := m.clearLabelRevision(appName); err != nil {
+				slog.Error("Failed to clear label revision after uninstall", "app", appName, "error", err)
+			}
+		} else if err := m.clearLabelRevision(appName); err != nil {
+			slog.Error("Failed to clear uninstall intent without an installer", "app", appName, "error", err)
 		}
 	}
-	m.reconcileStoredContainers()
+	m.reconcileContainerLifecycle()
+	m.reconcileRemovalIntents()
 }
 
-func (m *Monitor) reconcileStoredContainers() {
-	if m.configProvider == nil {
-		return
-	}
+func (m *Monitor) reconcileContainerLifecycle() {
 	m.containers.Range(func(key, value any) bool {
 		state := value.(*ContainerState)
-		if state.State != "running" || state.Installed || shouldInstall(state.Labels) {
+		switch state.State {
+		case "destroyed":
+			m.queueOperation(&AppOperation{Type: "destroy", ContainerID: state.ContainerID})
+			return true
+		case "exited":
+			if state.Installed {
+				registered := m.registry.Get(state.AppName)
+				if registered == nil || registered.Status != app.StatusStopped {
+					m.queueOperation(&AppOperation{Type: "stop", ContainerID: state.ContainerID})
+				}
+			}
+			return true
+		case "running":
+		default:
+			return true
+		}
+
+		if shouldInstall(state.Labels) {
+			appName := getAppNameFromLabels(state.Labels, state.ContainerName)
+			revision := labelRevisionForState(state)
+			registered := m.registry.Get(appName)
+			if !state.Installed || state.AppName != appName || !m.isLabelRevisionApplied(appName, revision) || registered == nil || registered.Status != app.StatusRunning {
+				storedConfig := m.getStoredConfigForPorts(state.ContainerID, state.Image, state.Ports, state.LegacyPortOptions)
+				previousAppName := ""
+				if storedConfig != nil {
+					previousAppName = storedConfig.AppName
+				}
+				m.queueOperation(&AppOperation{
+					Type: "container_start", ContainerID: state.ContainerID, ContainerName: state.ContainerName,
+					Labels: maps.Clone(state.Labels), LabelRevision: revision, PreviousAppName: previousAppName,
+				})
+			}
+			return true
+		}
+		if m.configProvider == nil {
 			return true
 		}
 		config := m.getStoredConfigForPorts(state.ContainerID, state.Image, state.Ports, state.LegacyPortOptions)
+		registered := (*app.App)(nil)
 		if config != nil {
-			m.queueOperation(&AppOperation{
-				Type:          "container_start",
-				ContainerID:   state.ContainerID,
-				ContainerName: state.ContainerName,
-				Labels:        maps.Clone(state.Labels),
-				StoredConfig:  config,
-			})
+			registered = m.registry.Get(config.AppName)
+		}
+		if config != nil && (config.Deleting || config.Pending || !state.Installed || state.AppName != config.AppName || m.appliedLabelAppForContainer(state.ContainerName) != "" || registered == nil || registered.Status != app.StatusRunning) {
+			m.queueStoredConfigOperation(state.ContainerID, state.ContainerName, state.Labels, config)
 		}
 		return true
 	})
 }
 
-// queueOperation sends an operation to the worker (fire and forget, no wait)
-func (m *Monitor) queueOperation(op *AppOperation) {
+func (m *Monitor) labelAppHasMultipleOwners(containerID, appName string) bool {
+	if appName == "" {
+		return false
+	}
+	owners := 0
+	m.containers.Range(func(key, value any) bool {
+		state := value.(*ContainerState)
+		if state.State != "running" || !shouldInstall(state.Labels) || getAppNameFromLabels(state.Labels, state.ContainerName) != appName {
+			return true
+		}
+		owners++
+		return owners < 2
+	})
+	return owners > 1
+}
+
+func (m *Monitor) currentDesiredApps() (map[string]bool, map[string]string) {
+	apps := make(map[string]bool)
+	byContainer := make(map[string]string)
+	m.containers.Range(func(_, value any) bool {
+		state := value.(*ContainerState)
+		if state.State == "destroyed" {
+			return true
+		}
+		appName := ""
+		if shouldInstall(state.Labels) {
+			appName = getAppNameFromLabels(state.Labels, state.ContainerName)
+		} else if m.configProvider != nil {
+			config := m.getStoredConfigForPorts(state.ContainerID, state.Image, state.Ports, state.LegacyPortOptions)
+			if config != nil && !config.Deleting {
+				appName = config.AppName
+			}
+		}
+		if appName != "" {
+			apps[appName] = true
+			byContainer[strings.TrimPrefix(state.ContainerName, "/")] = appName
+		}
+		return true
+	})
+	return apps, byContainer
+}
+
+func (m *Monitor) reconcileRemovalIntents() {
+	// Absence is meaningful only after Docker has returned a complete list.
+	// A transient daemon/socket failure must never be interpreted as removing
+	// every managed container.
+	if !m.inventoryReady.Load() {
+		return
+	}
+	queued := make(map[string]bool)
+	if m.configProvider != nil {
+		for _, match := range m.configProvider.GetDeletingConfigs() {
+			if match.Config == nil || match.Config.AppName == "" || queued[match.Config.AppName] {
+				continue
+			}
+			queued[match.Config.AppName] = true
+			m.queueOperation(&AppOperation{
+				Type: "dashboard_uninstall", AppName: match.Config.AppName, ConfigKey: match.Key,
+			})
+		}
+	}
+
+	desiredApps, desiredByContainer := m.currentDesiredApps()
+	if m.configProvider != nil {
+		for _, match := range m.configProvider.GetAllConfigs() {
+			config := match.Config
+			if config == nil || config.Deleting || config.AppName == "" || desiredApps[config.AppName] {
+				continue
+			}
+			if !m.isPendingUninstall(config.AppName) && (m.installer == nil || !m.installer.IsAppInstalled(config.AppName)) {
+				continue
+			}
+			if err := m.markPendingUninstall(config.AppName); err != nil {
+				slog.Error("Failed to persist orphaned dashboard app cleanup", "app", config.AppName, "error", err)
+			}
+		}
+	}
+	for containerName, appName := range m.labelOwnerSnapshot() {
+		if desiredByContainer[containerName] == appName {
+			continue
+		}
+		if err := m.markPendingUninstall(appName); err != nil {
+			slog.Error("Failed to persist orphaned label app cleanup", "app", appName, "error", err)
+		}
+	}
+	for _, appName := range m.pendingUninstallApps() {
+		if desiredApps[appName] || queued[appName] {
+			continue
+		}
+		queued[appName] = true
+		m.queueOperation(&AppOperation{Type: "orphan_uninstall", AppName: appName})
+	}
+}
+
+func (m *Monitor) runReconciler(ctx context.Context) {
+	ticker := time.NewTicker(15 * time.Second)
+	defer ticker.Stop()
+	for {
+		select {
+		case <-ctx.Done():
+			return
+		case <-m.stopCh:
+			return
+		case <-ticker.C:
+			if !m.inventoryReady.Load() {
+				m.scanContainers(ctx)
+			}
+			m.reconcileContainerLifecycle()
+			m.reconcileRemovalIntents()
+		}
+	}
+}
+
+func (m *Monitor) queueStoredConfigOperation(containerID, containerName string, labels map[string]string, config *StoredConfig) {
+	if config == nil {
+		return
+	}
+	if config.LastError != "" && !config.Pending && !config.Deleting {
+		slog.Info("Waiting for dashboard input before applying blocked config", "app", config.AppName, "error", config.LastError)
+		return
+	}
+	op := &AppOperation{
+		Type:            "container_start",
+		ContainerID:     containerID,
+		ContainerName:   containerName,
+		Labels:          maps.Clone(labels),
+		StoredConfig:    config,
+		PreviousAppName: m.appliedLabelAppForContainer(containerName),
+	}
+	if config.Deleting {
+		op.Type = "dashboard_uninstall"
+		op.AppName = config.AppName
+		op.ConfigKey = config.Key
+	}
+	if m.queueOperation(op) {
+		return
+	}
+	if config.Deleting && m.configProvider != nil {
+		m.recordDashboardDeleteFailure(config.Key, "操作队列已满，请重试")
+		return
+	}
+	m.recordDashboardFailure(config, fmt.Errorf("operation queue full"))
+}
+
+// queueOperation sends an operation to the worker (fire and forget, no wait).
+// It returns false when the bounded queue cannot accept the operation.
+func (m *Monitor) queueOperation(op *AppOperation) bool {
 	select {
 	case m.opQueue <- op:
+		return true
 	default:
 		slog.Warn("Operation queue full, dropping operation", "type", op.Type, "app", op.AppName)
+		return false
 	}
 }
 
@@ -801,6 +1465,8 @@ func (m *Monitor) Start(ctx context.Context) {
 
 	// Initial scan to process existing containers
 	m.scanContainers(ctx)
+	m.reconcileRemovalIntents()
+	go m.runReconciler(ctx)
 
 	// Start listening to Docker events for real-time updates
 	go m.listenToDockerEvents(ctx)
@@ -819,6 +1485,12 @@ func (m *Monitor) listenToDockerEvents(ctx context.Context) {
 	eventChan, errChan := m.cli.Events(ctx, events.ListOptions{
 		Filters: eventFilters,
 	})
+	// The subscription is active before this catch-up scan, so events that race
+	// with the scan remain queued and are applied afterward. This closes gaps
+	// between the initial scan and subscription, and after reconnects.
+	if m.scanContainers(ctx) {
+		m.reconcileRemovalIntents()
+	}
 
 	for {
 		select {
@@ -862,6 +1534,9 @@ func (m *Monitor) reconnectDockerEvents(ctx context.Context, msg string, args ..
 
 // handleDockerEvent processes a Docker event
 func (m *Monitor) handleDockerEvent(ctx context.Context, event events.Message) {
+	m.inventoryScanMu.Lock()
+	defer m.inventoryScanMu.Unlock()
+
 	containerName := event.Actor.Attributes["name"]
 	containerID := event.Actor.ID
 	if len(containerID) > 12 {
@@ -881,6 +1556,7 @@ func (m *Monitor) handleDockerEvent(ctx context.Context, event events.Message) {
 
 		identityPorts, webPorts := extractPortMappings(info.NetworkSettings.Ports)
 		legacyPortOptions := legacyPortOptions(info.NetworkSettings.Ports)
+		networkMode := string(info.HostConfig.NetworkMode)
 
 		// Publish a complete runtime snapshot while preserving install ownership.
 		m.updateContainerState(containerID, func() *ContainerState {
@@ -896,7 +1572,7 @@ func (m *Monitor) handleDockerEvent(ctx context.Context, event events.Message) {
 			state.WebPorts = maps.Clone(webPorts)
 			state.LegacyPortOptions = cloneStringSliceMap(legacyPortOptions)
 			state.Labels = maps.Clone(info.Config.Labels)
-			state.NetworkMode = string(info.HostConfig.NetworkMode)
+			state.NetworkMode = networkMode
 		})
 
 		// Check if should install: either has label config or has stored config
@@ -904,20 +1580,20 @@ func (m *Monitor) handleDockerEvent(ctx context.Context, event events.Message) {
 		storedConfig := m.getStoredConfigForPorts(containerID, info.Config.Image, identityPorts, legacyPortOptions)
 
 		if hasLabelConfig {
+			previousAppName := ""
+			if storedConfig != nil {
+				previousAppName = storedConfig.AppName
+			}
 			m.queueOperation(&AppOperation{
-				Type:          "container_start",
-				ContainerID:   containerID,
-				ContainerName: containerName,
-				Labels:        info.Config.Labels,
+				Type:            "container_start",
+				ContainerID:     containerID,
+				ContainerName:   containerName,
+				Labels:          info.Config.Labels,
+				LabelRevision:   labelConfigRevision(containerName, info.Config.Image, networkMode, webPorts, info.Config.Labels),
+				PreviousAppName: previousAppName,
 			})
 		} else if storedConfig != nil {
-			m.queueOperation(&AppOperation{
-				Type:          "container_start",
-				ContainerID:   containerID,
-				ContainerName: containerName,
-				Labels:        info.Config.Labels,
-				StoredConfig:  storedConfig,
-			})
+			m.queueStoredConfigOperation(containerID, containerName, info.Config.Labels, storedConfig)
 		}
 
 	case "stop", "die":
@@ -936,6 +1612,9 @@ func (m *Monitor) handleDockerEvent(ctx context.Context, event events.Message) {
 
 	case "destroy":
 		slog.Info("Container destroyed", "container", containerName, "id", containerID)
+		m.updateContainerState(containerID, nil, func(state *ContainerState) {
+			state.State = "destroyed"
+		})
 
 		// Queue destroy operation (processDestroy will handle cleanup and uninstall)
 		m.queueOperation(&AppOperation{
@@ -1083,34 +1762,51 @@ func shouldInstall(labels map[string]string) bool {
 }
 
 // scanContainers scans all containers and populates the state map
-func (m *Monitor) scanContainers(ctx context.Context) {
+func (m *Monitor) scanContainers(ctx context.Context) bool {
+	m.inventoryScanMu.Lock()
+	defer m.inventoryScanMu.Unlock()
+	m.inventoryReady.Store(false)
+
+	previousIDs := make(map[string]bool)
+	m.containers.Range(func(key, _ any) bool {
+		previousIDs[key.(string)] = true
+		return true
+	})
 	containers, err := m.cli.ContainerList(ctx, container.ListOptions{All: true})
 	if err != nil {
 		slog.Error("Failed to list containers", "error", err)
-		return
+		return false
 	}
-
 	slog.Info("Scanning existing containers...", "count", len(containers))
 
+	seenIDs := make(map[string]bool, len(containers))
 	for _, ctr := range containers {
-		containerID := ctr.ID[:12]
-		containerName := strings.TrimPrefix(ctr.Names[0], "/")
-
-		summaryPorts := summaryPortMap(ctr.Ports)
-		identityPorts, webPorts := extractPortMappings(summaryPorts)
-		legacyPortOptions := legacyPortOptions(summaryPorts)
-
-		// Add to state map
-		m.containers.Store(containerID, &ContainerState{
-			ContainerID:       containerID,
-			ContainerName:     containerName,
-			Image:             ctr.Image,
-			State:             ctr.State,
-			Ports:             identityPorts,
-			WebPorts:          webPorts,
-			LegacyPortOptions: legacyPortOptions,
-			Labels:            maps.Clone(ctr.Labels),
+		state := containerStateFromSummary(ctr)
+		seenIDs[state.ContainerID] = true
+		if value, ok := m.containers.Load(state.ContainerID); ok && value.(*ContainerState).State == "destroyed" {
+			continue
+		}
+		m.updateContainerState(state.ContainerID, func() *ContainerState {
+			return &ContainerState{ContainerID: state.ContainerID, ContainerName: state.ContainerName}
+		}, func(current *ContainerState) {
+			current.ContainerName = state.ContainerName
+			current.Image = state.Image
+			current.State = state.State
+			current.Ports = maps.Clone(state.Ports)
+			current.WebPorts = maps.Clone(state.WebPorts)
+			current.LegacyPortOptions = cloneStringSliceMap(state.LegacyPortOptions)
+			current.Labels = maps.Clone(state.Labels)
+			current.NetworkMode = state.NetworkMode
 		})
+	}
+	for containerID := range previousIDs {
+		if seenIDs[containerID] {
+			continue
+		}
+		m.updateContainerState(containerID, nil, func(state *ContainerState) {
+			state.State = "destroyed"
+		})
+		m.queueOperation(&AppOperation{Type: "destroy", ContainerID: containerID})
 	}
 
 	// Resolve legacy configs only after every current container is visible, so
@@ -1120,8 +1816,9 @@ func (m *Monitor) scanContainers(ctx context.Context) {
 		if ctr.State != "running" {
 			continue
 		}
-		containerID := ctr.ID[:12]
-		containerName := strings.TrimPrefix(ctr.Names[0], "/")
+		summaryState := containerStateFromSummary(ctr)
+		containerID := summaryState.ContainerID
+		containerName := summaryState.ContainerName
 		value, ok := m.containers.Load(containerID)
 		if !ok {
 			continue
@@ -1134,22 +1831,48 @@ func (m *Monitor) scanContainers(ctx context.Context) {
 
 		if hasLabelConfig {
 			slog.Info("Found label-configured container", "container", containerName)
+			previousAppName := ""
+			if storedConfig != nil {
+				previousAppName = storedConfig.AppName
+			}
 			m.queueOperation(&AppOperation{
-				Type:          "container_start",
-				ContainerID:   containerID,
-				ContainerName: containerName,
-				Labels:        ctr.Labels,
+				Type:            "container_start",
+				ContainerID:     containerID,
+				ContainerName:   containerName,
+				Labels:          ctr.Labels,
+				LabelRevision:   labelRevisionForState(state),
+				PreviousAppName: previousAppName,
 			})
 		} else if storedConfig != nil {
 			slog.Info("Found storage-configured container", "container", containerName)
-			m.queueOperation(&AppOperation{
-				Type:          "container_start",
-				ContainerID:   containerID,
-				ContainerName: containerName,
-				Labels:        ctr.Labels,
-				StoredConfig:  storedConfig,
-			})
+			m.queueStoredConfigOperation(containerID, containerName, ctr.Labels, storedConfig)
 		}
+	}
+	m.inventoryReady.Store(true)
+	return true
+}
+
+func containerStateFromSummary(ctr container.Summary) *ContainerState {
+	containerID := ctr.ID
+	if len(containerID) > 12 {
+		containerID = containerID[:12]
+	}
+	containerName := ""
+	if len(ctr.Names) > 0 {
+		containerName = strings.TrimPrefix(ctr.Names[0], "/")
+	}
+	summaryPorts := summaryPortMap(ctr.Ports)
+	identityPorts, webPorts := extractPortMappings(summaryPorts)
+	return &ContainerState{
+		ContainerID:       containerID,
+		ContainerName:     containerName,
+		Image:             ctr.Image,
+		State:             ctr.State,
+		Ports:             identityPorts,
+		WebPorts:          webPorts,
+		LegacyPortOptions: legacyPortOptions(summaryPorts),
+		Labels:            maps.Clone(ctr.Labels),
+		NetworkMode:       ctr.HostConfig.NetworkMode,
 	}
 }
 
@@ -1291,14 +2014,14 @@ func (m *Monitor) registerAppFromLabels(appName, containerID, containerName stri
 		Path:          labelOrDefault(labels, "watchcow.path", "/"),
 		UIType:        labelOrDefault(labels, "watchcow.ui_type", "url"),
 		AllUsers:      labelOrDefault(labels, "watchcow.all_users", "true") == "true",
-		Icon:          labels["watchcow.icon"],
+		Icon:          labelOrDefault(labels, "watchcow.icon", fpkgen.DefaultIconForImage(image)),
 		Labels:        maps.Clone(labels),
 		Status:        app.StatusRunning,
 		Entries:       make([]app.Entry, 0),
 	}
 
 	// Parse entries from labels using fpkgen's ParseEntries
-	defaultIcon := labels["watchcow.icon"]
+	defaultIcon := appInstance.Icon
 	appInstance.Entries = cloneAppEntries(fpkgen.ParseEntries(labels, appInstance.DisplayName, defaultIcon, defaultPort))
 	populateLegacyEntryFields(appInstance)
 
@@ -1348,12 +2071,14 @@ func (m *Monitor) TriggerUninstall(containerID, appName, configKey string) {
 
 	slog.Info("Queueing app uninstall from dashboard", "app", appName)
 
-	m.queueOperation(&AppOperation{
+	if !m.queueOperation(&AppOperation{
 		Type:        "dashboard_uninstall",
 		ContainerID: containerID,
 		AppName:     appName,
 		ConfigKey:   configKey,
-	})
+	}) && m.configProvider != nil {
+		m.recordDashboardDeleteFailure(configKey, "操作队列已满，请重试")
+	}
 }
 
 // processDashboardUninstall handles uninstall triggered from dashboard.
@@ -1362,24 +2087,44 @@ func (m *Monitor) processDashboardUninstall(op *AppOperation) {
 	if appName == "" {
 		return
 	}
-	if op.ConfigKey != "" && m.configProvider != nil && m.configProvider.GetByKey(op.ConfigKey) != nil {
-		slog.Info("Skipping stale dashboard uninstall because a new config exists", "app", appName, "key", op.ConfigKey)
+	if m.labelSourceOwnsApp(appName) {
+		slog.Info("Skipping dashboard uninstall because the app is owned by label config", "app", appName)
+		m.recordDashboardDeleteFailure(op.ConfigKey, "应用当前由 labels 配置接管，无法从 Dashboard 卸载")
 		return
+	}
+	if m.appHasActiveDesiredOwner(appName) {
+		slog.Info("Skipping dashboard uninstall because another active config owns the app", "app", appName)
+		m.recordDashboardDeleteFailure(op.ConfigKey, "应用仍由另一个活动配置使用，无法卸载")
+		return
+	}
+	if op.ConfigKey != "" && m.configProvider != nil {
+		current := m.configProvider.GetByKey(op.ConfigKey)
+		if current == nil || !current.Deleting {
+			slog.Info("Skipping stale dashboard uninstall because delete intent changed", "app", appName, "key", op.ConfigKey)
+			return
+		}
 	}
 
 	slog.Info("Processing dashboard uninstall", "app", appName)
+	if err := m.markPendingUninstall(appName); err != nil {
+		slog.Error("Failed to persist dashboard uninstall intent", "app", appName, "error", err)
+	}
 
 	// Uninstall from fnOS
-	if m.installer != nil {
+	if m.installer != nil && m.installer.IsAppInstalled(appName) {
 		if err := m.installer.Uninstall(appName); err != nil {
 			slog.Error("Dashboard uninstall failed", "app", appName, "error", err)
 			m.recordFailedUninstallStatus(appName, err)
+			m.recordDashboardDeleteFailure(op.ConfigKey, err.Error())
 			return
 		}
 	}
 
 	// Unregister only after the system package is actually gone.
 	m.registry.Unregister(appName)
+	if err := m.clearLabelRevision(appName); err != nil {
+		slog.Error("Failed to clear label revision after dashboard uninstall", "app", appName, "error", err)
+	}
 
 	// Clear installed state for any container with this app name
 	m.containers.Range(func(key, value any) bool {
@@ -1394,18 +2139,82 @@ func (m *Monitor) processDashboardUninstall(op *AppOperation) {
 		}
 		return true
 	})
+	if m.configProvider != nil && op.ConfigKey != "" {
+		if err := m.configProvider.CompleteDelete(appName); err != nil {
+			slog.Error("Failed to finalize dashboard config deletion", "app", appName, "error", err)
+			return
+		}
+	}
 
 	slog.Info("Dashboard uninstall completed", "app", appName)
 }
 
+func (m *Monitor) processOrphanUninstall(op *AppOperation) {
+	appName := op.AppName
+	if appName == "" || !m.isPendingUninstall(appName) || m.appHasActiveDesiredOwner(appName) {
+		return
+	}
+	if m.installer != nil && m.installer.IsAppInstalled(appName) {
+		if err := m.installer.Uninstall(appName); err != nil {
+			slog.Error("Failed to uninstall orphaned fnOS app", "app", appName, "error", err)
+			m.recordFailedUninstallStatus(appName, err)
+			return
+		}
+	}
+	m.registry.Unregister(appName)
+	m.clearAppOwnership(appName, "")
+	if err := m.clearLabelRevision(appName); err != nil {
+		slog.Error("Failed to finalize orphaned app cleanup", "app", appName, "error", err)
+	}
+}
+
+func (m *Monitor) appHasActiveDesiredOwner(appName string) bool {
+	if appName == "" {
+		return false
+	}
+	desired, _ := m.currentDesiredApps()
+	return desired[appName]
+}
+
+func (m *Monitor) labelSourceOwnsApp(appName string) bool {
+	owned := false
+	m.containers.Range(func(_, value any) bool {
+		state := value.(*ContainerState)
+		if shouldInstall(state.Labels) && getAppNameFromLabels(state.Labels, state.ContainerName) == appName {
+			owned = true
+			return false
+		}
+		return true
+	})
+	return owned
+}
+
 // processDashboardReinstall handles config update: uninstall old app, then install with new config.
 func (m *Monitor) processDashboardReinstall(ctx context.Context, op *AppOperation) {
-	if op.StoredConfig != nil && !m.isCurrentPendingConfig(op.StoredConfig) {
+	if op.StoredConfig != nil {
+		if op.ForceReconcile {
+			if !m.isCurrentStoredConfig(op.StoredConfig) {
+				return
+			}
+		} else if !m.isCurrentPendingConfig(op.StoredConfig) {
+			return
+		}
+	}
+	if op.StoredConfig == nil && op.LabelRevision != "" && !m.isCurrentLabelRevision(op.ContainerID, op.LabelRevision) {
 		return
 	}
 	oldAppName := m.installedAppName(op.ContainerID)
-	if oldAppName == "" && m.installer != nil && op.StoredConfig != nil && m.installer.IsAppInstalled(op.StoredConfig.AppName) {
-		oldAppName = op.StoredConfig.AppName
+	desiredAppName := op.AppName
+	if op.StoredConfig != nil {
+		desiredAppName = op.StoredConfig.AppName
+	} else {
+		desiredAppName = getAppNameFromLabels(op.Labels, op.ContainerName)
+	}
+	if op.PreviousAppName != "" && m.installer != nil && m.installer.IsAppInstalled(op.PreviousAppName) {
+		oldAppName = op.PreviousAppName
+	}
+	if oldAppName == "" && m.installer != nil && desiredAppName != "" && m.installer.IsAppInstalled(desiredAppName) {
+		oldAppName = desiredAppName
 	}
 	if oldAppName == "" {
 		m.processContainerStartWithMode(ctx, op, true)
@@ -1418,19 +2227,45 @@ func (m *Monitor) processDashboardReinstall(ctx context.Context, op *AppOperatio
 		if err := m.installer.Uninstall(oldAppName); err != nil {
 			slog.Error("Cannot reinstall because uninstall failed", "app", oldAppName, "error", err)
 			m.recordFailedUninstallStatus(oldAppName, err)
+			m.recordDashboardFailure(op.StoredConfig, err)
 			return
 		}
 	}
 	m.registry.Unregister(oldAppName)
+	if err := m.clearLabelRevision(oldAppName); err != nil {
+		slog.Error("Failed to clear label revision after uninstall", "app", oldAppName, "error", err)
+	}
 
-	// Clear installed state
-	m.updateContainerState(op.ContainerID, nil, func(state *ContainerState) {
-		state.AppName = ""
-		state.Installed = false
-	})
-	if op.StoredConfig != nil && !m.isCurrentPendingConfig(op.StoredConfig) {
-		slog.Info("Skipping stale dashboard config after uninstall", "app", op.StoredConfig.AppName, "revision", op.StoredConfig.Revision)
+	// The package has a single system identity. Clear every previous owner so a
+	// later destroy event cannot uninstall the package after it is reinstalled.
+	m.clearAppOwnership(oldAppName, "")
+	if op.StoredConfig != nil {
+		current := m.isCurrentPendingConfig(op.StoredConfig)
+		if op.ForceReconcile {
+			current = m.isCurrentStoredConfig(op.StoredConfig)
+		}
+		if !current {
+			slog.Info("Skipping stale dashboard config after uninstall", "app", op.StoredConfig.AppName, "revision", op.StoredConfig.Revision)
+			return
+		}
+	}
+	if op.StoredConfig == nil && op.LabelRevision != "" && !m.isCurrentLabelRevision(op.ContainerID, op.LabelRevision) {
+		slog.Info("Skipping stale label config after uninstall", "app", desiredAppName, "revision", op.LabelRevision)
 		return
+	}
+	if oldAppName != desiredAppName && desiredAppName != "" && m.installer != nil && m.installer.IsAppInstalled(desiredAppName) {
+		slog.Info("Removing stale desired package before source reconciliation", "app", desiredAppName)
+		if err := m.installer.Uninstall(desiredAppName); err != nil {
+			slog.Error("Cannot reconcile because stale desired package uninstall failed", "app", desiredAppName, "error", err)
+			m.recordFailedUninstallStatus(desiredAppName, err)
+			m.recordDashboardFailure(op.StoredConfig, err)
+			return
+		}
+		m.registry.Unregister(desiredAppName)
+		if err := m.clearLabelRevision(desiredAppName); err != nil {
+			slog.Error("Failed to clear stale desired label revision", "app", desiredAppName, "error", err)
+		}
+		m.clearAppOwnership(desiredAppName, "")
 	}
 
 	// Step 2: Always regenerate and install the new config. The ordinary
