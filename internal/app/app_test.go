@@ -1,6 +1,7 @@
 package app
 
 import (
+	"strings"
 	"testing"
 )
 
@@ -100,6 +101,17 @@ func TestApp_HasRedirect(t *testing.T) {
 	})
 }
 
+func TestEntry_GetRedirectConfigPreservesBehavior(t *testing.T) {
+	entry := Entry{Redirect: "https://example.com", Port: "8080", ForceExternal: true}
+	config := entry.GetRedirectConfig()
+	if config == nil {
+		t.Fatal("expected redirect config")
+	}
+	if config.Host != entry.Redirect || config.Port != entry.Port || config.ForceExternal != entry.ForceExternal {
+		t.Errorf("redirect config = %+v, want fields from %+v", config, entry)
+	}
+}
+
 func TestDefaultAppName(t *testing.T) {
 	tests := []struct {
 		name string
@@ -118,6 +130,20 @@ func TestDefaultAppName(t *testing.T) {
 				t.Errorf("DefaultAppName(%q) = %q, want %q", tt.in, got, tt.want)
 			}
 		})
+	}
+}
+
+func TestGeneratedAppNameBoundsLongAutomaticNames(t *testing.T) {
+	nameA := GeneratedAppName(strings.Repeat("a", 140), "18080")
+	nameB := GeneratedAppName(strings.Repeat("a", 139)+"b", "18080")
+	if len(nameA) != MaxAppNameLength || len(nameB) != MaxAppNameLength {
+		t.Fatalf("generated names exceed bound: %d, %d", len(nameA), len(nameB))
+	}
+	if nameA == nameB {
+		t.Fatalf("different long names collided: %q", nameA)
+	}
+	if nameA != GeneratedAppName(strings.Repeat("a", 140), "18080") {
+		t.Error("generated name is not deterministic")
 	}
 }
 

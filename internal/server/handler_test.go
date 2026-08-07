@@ -6,6 +6,8 @@ import (
 	"net/http/httptest"
 	"net/url"
 	"os"
+	"reflect"
+	"slices"
 	"strings"
 	"testing"
 
@@ -37,7 +39,7 @@ func (m *mockAppTrigger) TriggerInstall(containerID string, storedConfig *docker
 	m.triggerCalls = append(m.triggerCalls, triggerCall{containerID, storedConfig})
 }
 
-func (m *mockAppTrigger) TriggerUninstall(appName string) {
+func (m *mockAppTrigger) TriggerUninstall(containerID, appName, configKey string) {
 	// Track uninstall calls if needed
 }
 
@@ -150,6 +152,293 @@ func TestDashboardHandler_ContainerList(t *testing.T) {
 	}
 }
 
+func TestDashboardHandler_ContainerListUsesIdentityPortsForStorage(t *testing.T) {
+	handler, storage, _ := setupTestHandler(t)
+	key := ContainerKey("dns-web:latest|53:5353,80:8080")
+	if err := storage.Set(&StoredConfig{Key: key, AppName: "watchcow.dns-web"}); err != nil {
+		t.Fatalf("storage.Set() error = %v", err)
+	}
+	handler.lister = &mockContainerLister{containers: []docker.ContainerInfo{{
+		ID:            "dns123",
+		Name:          "dns-web",
+		Image:         "dns-web:latest",
+		State:         "running",
+		Ports:         map[string]string{"80": "8080"},
+		IdentityPorts: map[string]string{"53/tcp": "1053", "53/udp": "5353", "80/tcp": "8080"},
+		LegacyPortOptions: map[string][]string{
+			"53": {"1053", "5353"},
+			"80": {"8080"},
+		},
+	}}}
+
+	containers, err := handler.listContainers(context.Background())
+	if err != nil {
+		t.Fatalf("listContainers() error = %v", err)
+	}
+	canonicalKey := ContainerKey("dns-web:latest|@dns-web;53/tcp:1053,53/udp:5353,80/tcp:8080")
+	if len(containers) != 1 || !containers[0].HasStoredConfig ||
+		containers[0].Key != canonicalKey || containers[0].ConfigKey != key {
+		t.Errorf("identity port storage lookup failed: %+v", containers)
+	}
+	if !reflect.DeepEqual(containers[0].Ports, map[string]string{"80": "8080"}) {
+		t.Errorf("dashboard exposed non-web ports: %v", containers[0].Ports)
+	}
+}
+
+func TestDashboardHandler_DoesNotShareAmbiguousLegacyKey(t *testing.T) {
+	handler, storage, _ := setupTestHandler(t)
+	legacyKey := ContainerKey("dns:latest|53:1053")
+	if err := storage.Set(&StoredConfig{Key: legacyKey, AppName: "watchcow.dns"}); err != nil {
+		t.Fatal(err)
+	}
+	handler.lister = &mockContainerLister{containers: []docker.ContainerInfo{
+		{
+			ID:                "tcp",
+			Image:             "dns:latest",
+			IdentityPorts:     map[string]string{"53/tcp": "1053"},
+			LegacyPortOptions: map[string][]string{"53": {"1053"}},
+			Labels:            map[string]string{},
+		},
+		{
+			ID:                "udp",
+			Image:             "dns:latest",
+			IdentityPorts:     map[string]string{"53/udp": "1053"},
+			LegacyPortOptions: map[string][]string{"53": {"1053"}},
+			Labels:            map[string]string{},
+		},
+	}}
+
+	containers, err := handler.listContainers(context.Background())
+	if err != nil {
+		t.Fatal(err)
+	}
+	for _, container := range containers {
+		if container.HasStoredConfig || container.Config != nil || len(container.LegacyConfigKeys) != 0 {
+			t.Errorf("ambiguous legacy config was claimed by %s: %+v", container.ID, container)
+		}
+	}
+	deleteReq := httptest.NewRequest("DELETE", "/containers/tcp", nil)
+	deleteReq = setChiURLParam(deleteReq, "id", "tcp")
+	deleteW := httptest.NewRecorder()
+	handler.handleContainerDelete(deleteW, deleteReq)
+	if deleteW.Code != http.StatusConflict || storage.Get(legacyKey) == nil {
+		t.Errorf("shared legacy delete was not safely blocked: status=%d config=%+v", deleteW.Code, storage.Get(legacyKey))
+	}
+}
+
+func TestDashboardHandler_DoesNotShareNoPortConfig(t *testing.T) {
+	handler, storage, _ := setupTestHandler(t)
+	legacyKey := ContainerKey("redis:latest|")
+	if err := storage.Set(&StoredConfig{Key: legacyKey, AppName: "watchcow.redis"}); err != nil {
+		t.Fatal(err)
+	}
+	handler.lister = &mockContainerLister{containers: []docker.ContainerInfo{
+		{ID: "a", Name: "redis-a", Image: "redis:latest", IdentityPorts: map[string]string{}, Labels: map[string]string{}},
+		{ID: "b", Name: "redis-b", Image: "redis:latest", IdentityPorts: map[string]string{}, Labels: map[string]string{}},
+	}}
+
+	containers, err := handler.listContainers(context.Background())
+	if err != nil {
+		t.Fatal(err)
+	}
+	if containers[0].Key == containers[1].Key {
+		t.Fatalf("no-port canonical keys collided: %+v", containers)
+	}
+	for _, container := range containers {
+		if container.HasStoredConfig || !container.LegacyConfigConflict {
+			t.Errorf("shared no-port legacy config was claimed by %s: %+v", container.ID, container)
+		}
+	}
+}
+
+func TestDashboardHandler_DoesNotShareNamedCanonicalKey(t *testing.T) {
+	handler, storage, _ := setupTestHandler(t)
+	keyA := ContainerKey("web:latest|@web-a;8080/tcp:18080")
+	if err := storage.Set(&StoredConfig{Key: keyA, AppName: "watchcow.web-a"}); err != nil {
+		t.Fatal(err)
+	}
+	handler.lister = &mockContainerLister{containers: []docker.ContainerInfo{
+		{ID: "a", Name: "web-a", Image: "web:latest", IdentityPorts: map[string]string{"8080/tcp": "18080"}, LegacyPortOptions: map[string][]string{"8080": {"18080"}}, Labels: map[string]string{}},
+		{ID: "b", Name: "web-b", Image: "web:latest", IdentityPorts: map[string]string{"8080/tcp": "18080"}, LegacyPortOptions: map[string][]string{"8080": {"18080"}}, Labels: map[string]string{}},
+	}}
+
+	containers, err := handler.listContainers(context.Background())
+	if err != nil {
+		t.Fatal(err)
+	}
+	byID := map[string]ContainerInfo{containers[0].ID: containers[0], containers[1].ID: containers[1]}
+	if !byID["a"].HasStoredConfig || byID["a"].ConfigKey != keyA {
+		t.Errorf("exact owner lost its config: %+v", byID["a"])
+	}
+	if byID["b"].HasStoredConfig || byID["b"].LegacyConfigConflict {
+		t.Errorf("same-mapping container was not left independently configurable: %+v", byID["b"])
+	}
+}
+
+func TestDashboardHandler_ExactOwnerDoesNotDeleteAbsentNamedConfig(t *testing.T) {
+	handler, storage, _ := setupTestHandler(t)
+	keyA := ContainerKey("web:latest|@web-a;8080/tcp:18080")
+	keyB := ContainerKey("web:latest|@web-b;8080/tcp:18080")
+	for _, config := range []*StoredConfig{
+		{Key: keyA, AppName: "watchcow.web-a"},
+		{Key: keyB, AppName: "watchcow.web-b"},
+	} {
+		if err := storage.Set(config); err != nil {
+			t.Fatal(err)
+		}
+	}
+	handler.lister = &mockContainerLister{containers: []docker.ContainerInfo{{
+		ID: "a", Name: "web-a", Image: "web:latest",
+		IdentityPorts: map[string]string{"8080/tcp": "18080"}, LegacyPortOptions: map[string][]string{"8080": {"18080"}}, Labels: map[string]string{},
+	}}}
+
+	containers, err := handler.listContainers(context.Background())
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(containers) != 1 || len(containers[0].LegacyConfigKeys) != 0 {
+		t.Fatalf("absent named config was treated as an alias: %+v", containers)
+	}
+	req := httptest.NewRequest("DELETE", "/containers/a", nil)
+	req = setChiURLParam(req, "id", "a")
+	w := httptest.NewRecorder()
+	handler.handleContainerDelete(w, req)
+	if w.Code != http.StatusOK || storage.Get(keyA) != nil || storage.Get(keyB) == nil {
+		t.Fatalf("delete crossed named owners: status=%d a=%+v b=%+v", w.Code, storage.Get(keyA), storage.Get(keyB))
+	}
+}
+
+func TestDashboardHandler_RenamedContainerFindsUniqueNamedKey(t *testing.T) {
+	handler, storage, _ := setupTestHandler(t)
+	oldKey := ContainerKey("web:latest|@old-name;8080/tcp:18080")
+	if err := storage.Set(&StoredConfig{Key: oldKey, AppName: "watchcow.web"}); err != nil {
+		t.Fatal(err)
+	}
+	handler.lister = &mockContainerLister{containers: []docker.ContainerInfo{{
+		ID: "web", Name: "new-name", Image: "web:latest",
+		IdentityPorts: map[string]string{"8080/tcp": "18080"}, LegacyPortOptions: map[string][]string{"8080": {"18080"}}, Labels: map[string]string{},
+	}}}
+
+	containers, err := handler.listContainers(context.Background())
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(containers) != 1 || !containers[0].HasStoredConfig || containers[0].ConfigKey != oldKey {
+		t.Fatalf("renamed container did not recover unique config: %+v", containers)
+	}
+}
+
+func TestDashboardHandler_SaveRejectsMultipleLegacyCandidates(t *testing.T) {
+	handler, storage, _ := setupTestHandler(t)
+	for _, key := range []ContainerKey{"dns:latest|53:1053", "dns:latest|53:2053"} {
+		if err := storage.Set(&StoredConfig{Key: key, AppName: "watchcow.dns"}); err != nil {
+			t.Fatal(err)
+		}
+	}
+	handler.lister = &mockContainerLister{containers: []docker.ContainerInfo{{
+		ID:                "dns",
+		Name:              "dns",
+		Image:             "dns:latest",
+		IdentityPorts:     map[string]string{"53/tcp": "1053", "53/udp": "2053"},
+		LegacyPortOptions: map[string][]string{"53": {"1053", "2053"}},
+		Labels:            map[string]string{},
+	}}}
+
+	req := httptest.NewRequest("POST", "/containers/dns", strings.NewReader(url.Values{"display_name": {"DNS"}}.Encode()))
+	req.Header.Set("Content-Type", "application/x-www-form-urlencoded")
+	req = setChiURLParam(req, "id", "dns")
+	w := httptest.NewRecorder()
+	handler.handleContainerSave(w, req)
+	if w.Code != http.StatusConflict {
+		t.Fatalf("save status = %d, want conflict", w.Code)
+	}
+	for _, key := range []ContainerKey{"dns:latest|53:1053", "dns:latest|53:2053"} {
+		if storage.Get(key) == nil {
+			t.Errorf("conflict save deleted legacy config %q", key)
+		}
+	}
+
+	deleteReq := httptest.NewRequest("DELETE", "/containers/dns", nil)
+	deleteReq = setChiURLParam(deleteReq, "id", "dns")
+	deleteW := httptest.NewRecorder()
+	handler.handleContainerDelete(deleteW, deleteReq)
+	if deleteW.Code != http.StatusOK {
+		t.Fatalf("conflict delete status = %d", deleteW.Code)
+	}
+	for _, key := range []ContainerKey{"dns:latest|53:1053", "dns:latest|53:2053"} {
+		if storage.Get(key) != nil {
+			t.Errorf("explicit conflict delete left legacy config %q", key)
+		}
+	}
+}
+
+func TestDashboardHandler_SaveMigratesUniqueLegacyKey(t *testing.T) {
+	handler, storage, _ := setupTestHandler(t)
+	legacyKey := ContainerKey("dns:latest|53:1053")
+	canonicalKey := ContainerKey("dns:latest|@dns;53/tcp:1053")
+	if err := storage.Set(&StoredConfig{Key: legacyKey, AppName: "watchcow.dns"}); err != nil {
+		t.Fatal(err)
+	}
+	handler.lister = &mockContainerLister{containers: []docker.ContainerInfo{{
+		ID:                "dns",
+		Name:              "dns",
+		Image:             "dns:latest",
+		State:             "running",
+		Ports:             map[string]string{"53": "1053"},
+		IdentityPorts:     map[string]string{"53/tcp": "1053"},
+		LegacyPortOptions: map[string][]string{"53": {"1053"}},
+		Labels:            map[string]string{},
+	}}}
+
+	form := url.Values{"display_name": {"DNS"}, "entry_port": {"1053"}}
+	req := httptest.NewRequest("POST", "/containers/dns", strings.NewReader(form.Encode()))
+	req.Header.Set("Content-Type", "application/x-www-form-urlencoded")
+	req = setChiURLParam(req, "id", "dns")
+	w := httptest.NewRecorder()
+	handler.handleContainerSave(w, req)
+	if w.Code != http.StatusOK {
+		t.Fatalf("save status = %d: %s", w.Code, w.Body.String())
+	}
+	if storage.Get(legacyKey) != nil || storage.Get(canonicalKey) == nil {
+		t.Fatalf("legacy config was not migrated: legacy=%+v canonical=%+v", storage.Get(legacyKey), storage.Get(canonicalKey))
+	}
+	if saved := storage.Get(canonicalKey); !saved.Pending || saved.Revision == "" {
+		t.Errorf("migrated config is not pending application: %+v", saved)
+	}
+}
+
+func TestDashboardHandler_DeleteRemovesExactAndUniqueLegacyKeys(t *testing.T) {
+	handler, storage, _ := setupTestHandler(t)
+	legacyKey := ContainerKey("web:latest|8080:18080")
+	canonicalKey := ContainerKey("web:latest|@web;8080/tcp:18080")
+	for _, key := range []ContainerKey{legacyKey, canonicalKey} {
+		if err := storage.Set(&StoredConfig{Key: key, AppName: "watchcow.web"}); err != nil {
+			t.Fatal(err)
+		}
+	}
+	handler.lister = &mockContainerLister{containers: []docker.ContainerInfo{{
+		ID:                "web",
+		Name:              "web",
+		Image:             "web:latest",
+		State:             "running",
+		Ports:             map[string]string{"8080": "18080"},
+		IdentityPorts:     map[string]string{"8080/tcp": "18080"},
+		LegacyPortOptions: map[string][]string{"8080": {"18080"}},
+		Labels:            map[string]string{},
+	}}}
+
+	req := httptest.NewRequest("DELETE", "/containers/web", nil)
+	req = setChiURLParam(req, "id", "web")
+	w := httptest.NewRecorder()
+	handler.handleContainerDelete(w, req)
+	if w.Code != http.StatusOK {
+		t.Fatalf("delete status = %d: %s", w.Code, w.Body.String())
+	}
+	if storage.Get(canonicalKey) != nil || storage.Get(legacyKey) != nil {
+		t.Fatalf("delete left a storage alias: canonical=%+v legacy=%+v", storage.Get(canonicalKey), storage.Get(legacyKey))
+	}
+}
+
 func TestDashboardHandler_ContainerForm(t *testing.T) {
 	handler, _, _ := setupTestHandler(t)
 
@@ -169,6 +458,36 @@ func TestDashboardHandler_ContainerForm(t *testing.T) {
 	if !strings.Contains(body, "nginx") {
 		t.Error("response should contain container name")
 	}
+	if !strings.Contains(body, `name="entry_redirect_force_external"`) {
+		t.Error("response should contain force-external redirect control")
+	}
+}
+
+func TestDashboardHandler_ContainerFormUsesUnnamedEntry(t *testing.T) {
+	handler, storage, _ := setupTestHandler(t)
+	key := ContainerKey("nginx:alpine|80:8080")
+	admin := StoredEntry{Name: "admin", Title: "Admin", Redirect: "https://admin.example", ForceExternal: false}
+	defaultEntry := StoredEntry{Title: "Default", Protocol: "http", Port: "8080", Path: "/", UIType: "url", Redirect: "https://default.example", ForceExternal: true}
+	if err := storage.Set(&StoredConfig{
+		Key:         key,
+		DisplayName: "Nginx",
+		Entries:     []StoredEntry{admin, defaultEntry},
+	}); err != nil {
+		t.Fatalf("storage.Set() error = %v", err)
+	}
+
+	req := httptest.NewRequest("GET", "/containers/abc123", nil)
+	req = setChiURLParam(req, "id", "abc123")
+	w := httptest.NewRecorder()
+	handler.handleContainerForm(w, req)
+
+	body := w.Body.String()
+	if !strings.Contains(body, `value="https://default.example"`) || strings.Contains(body, `value="https://admin.example"`) {
+		t.Errorf("form did not bind to unnamed entry: %s", body)
+	}
+	if !strings.Contains(body, `name="entry_redirect_force_external" value="true" checked`) {
+		t.Error("form did not render unnamed entry's force-external state")
+	}
 }
 
 func TestDashboardHandler_ContainerSave(t *testing.T) {
@@ -177,15 +496,17 @@ func TestDashboardHandler_ContainerSave(t *testing.T) {
 	containerID := "abc123"
 	key := "nginx:alpine|80:8080"
 	form := url.Values{
-		"display_name":   {"Nginx Test"},
-		"description":    {"Web server test"},
-		"version":        {"1.0.0"},
-		"maintainer":     {"Tester"},
-		"entry_title":    {"Nginx"},
-		"entry_protocol": {"http"},
-		"entry_port":     {"8080"},
-		"entry_path":     {"/"},
-		"entry_ui_type":  {"url"},
+		"display_name":                  {"Nginx Test"},
+		"description":                   {"Web server test"},
+		"version":                       {"1.0.0"},
+		"maintainer":                    {"Tester"},
+		"entry_title":                   {"Nginx"},
+		"entry_protocol":                {"http"},
+		"entry_port":                    {"8080"},
+		"entry_path":                    {"/"},
+		"entry_ui_type":                 {"url"},
+		"entry_redirect":                {"https://example.com"},
+		"entry_redirect_force_external": {"true"},
 	}
 
 	req := httptest.NewRequest("POST", "/containers/"+containerID, strings.NewReader(form.Encode()))
@@ -212,6 +533,12 @@ func TestDashboardHandler_ContainerSave(t *testing.T) {
 	if saved.DisplayName != "Nginx Test" {
 		t.Errorf("DisplayName = %q, want %q", saved.DisplayName, "Nginx Test")
 	}
+	if len(saved.Entries) != 1 || !saved.Entries[0].ForceExternal {
+		t.Errorf("force-external entry setting was not saved: %+v", saved.Entries)
+	}
+	if !saved.Pending || saved.Revision == "" {
+		t.Errorf("saved config is not marked pending: %+v", saved)
+	}
 
 	// Verify TriggerInstall was called
 	if len(trigger.triggerCalls) != 1 {
@@ -223,6 +550,77 @@ func TestDashboardHandler_ContainerSave(t *testing.T) {
 		if trigger.triggerCalls[0].storedConfig.AppName != "watchcow.nginx.8080" {
 			t.Errorf("TriggerInstall storedConfig.AppName = %q, want %q", trigger.triggerCalls[0].storedConfig.AppName, "watchcow.nginx.8080")
 		}
+		if !trigger.triggerCalls[0].storedConfig.Pending || trigger.triggerCalls[0].storedConfig.Revision != saved.Revision {
+			t.Errorf("trigger did not receive pending revision: %+v", trigger.triggerCalls[0].storedConfig)
+		}
+	}
+}
+
+func TestDashboardHandler_ContainerSavePreservesHiddenAndNamedEntries(t *testing.T) {
+	handler, storage, _ := setupTestHandler(t)
+	key := ContainerKey("nginx:alpine|80:8080")
+	existing := &StoredConfig{
+		Key:         key,
+		AppName:     "watchcow.nginx.8080",
+		DisplayName: "Old title",
+		Entries: []StoredEntry{
+			{
+				Title:      "Old entry",
+				Protocol:   "http",
+				Port:       "8080",
+				Path:       "/old",
+				UIType:     "url",
+				AllUsers:   true,
+				FileTypes:  []string{"txt", "md"},
+				NoDisplay:  true,
+				IconBase64: "entry-icon",
+			},
+			{
+				Name:       "admin",
+				Title:      "Admin",
+				Protocol:   "https",
+				Port:       "8443",
+				Path:       "/admin",
+				UIType:     "iframe",
+				FileTypes:  []string{"json"},
+				IconBase64: "admin-icon",
+			},
+		},
+	}
+	if err := storage.Set(existing); err != nil {
+		t.Fatalf("storage.Set() error = %v", err)
+	}
+
+	form := url.Values{
+		"display_name":   {"Updated title"},
+		"entry_title":    {"Updated entry"},
+		"entry_protocol": {"https"},
+		"entry_port":     {"8080"},
+		"entry_path":     {"/new"},
+		"entry_ui_type":  {"iframe"},
+	}
+	req := httptest.NewRequest("POST", "/containers/abc123", strings.NewReader(form.Encode()))
+	req.Header.Set("Content-Type", "application/x-www-form-urlencoded")
+	req = setChiURLParam(req, "id", "abc123")
+	w := httptest.NewRecorder()
+
+	handler.handleContainerSave(w, req)
+	if w.Code != http.StatusOK {
+		t.Fatalf("save status = %d, body = %s", w.Code, w.Body.String())
+	}
+
+	saved := storage.Get(key)
+	if len(saved.Entries) != 2 {
+		t.Fatalf("saved entries = %+v, want default and named entry", saved.Entries)
+	}
+	defaultEntry := saved.Entries[0]
+	if defaultEntry.Title != "Updated entry" || defaultEntry.Path != "/new" ||
+		!slices.Equal(defaultEntry.FileTypes, []string{"txt", "md"}) ||
+		!defaultEntry.NoDisplay || defaultEntry.IconBase64 != "entry-icon" {
+		t.Errorf("default entry lost hidden fields: %+v", defaultEntry)
+	}
+	if !reflect.DeepEqual(saved.Entries[1], existing.Entries[1]) {
+		t.Errorf("named entry changed\n got: %+v\nwant: %+v", saved.Entries[1], existing.Entries[1])
 	}
 }
 
@@ -349,17 +747,18 @@ func TestDashboardHandler_ConvertToDockerConfig(t *testing.T) {
 		IconBase64:  "icon-base64",
 		Entries: []StoredEntry{
 			{
-				Name:       "",
-				Title:      "Default",
-				Protocol:   "http",
-				Port:       "80",
-				Path:       "/",
-				UIType:     "url",
-				AllUsers:   true,
-				FileTypes:  []string{".html"},
-				NoDisplay:  false,
-				Redirect:   "https://example.com",
-				IconBase64: "entry-icon",
+				Name:          "",
+				Title:         "Default",
+				Protocol:      "http",
+				Port:          "80",
+				Path:          "/",
+				UIType:        "url",
+				AllUsers:      true,
+				FileTypes:     []string{".html"},
+				NoDisplay:     false,
+				Redirect:      "https://example.com",
+				ForceExternal: true,
+				IconBase64:    "entry-icon",
 			},
 		},
 	}
@@ -420,8 +819,16 @@ func TestDashboardHandler_ConvertToDockerConfig(t *testing.T) {
 	if entry.Redirect != "https://example.com" {
 		t.Errorf("Entry.Redirect = %q, want %q", entry.Redirect, "https://example.com")
 	}
+	if !entry.ForceExternal {
+		t.Error("Entry.ForceExternal should be true")
+	}
 	if entry.IconBase64 != "entry-icon" {
 		t.Errorf("Entry.IconBase64 = %q, want %q", entry.IconBase64, "entry-icon")
+	}
+
+	dockerCfg.Entries[0].FileTypes[0] = "mutated"
+	if config.Entries[0].FileTypes[0] != ".html" {
+		t.Errorf("convertToDockerConfig returned shared FileTypes: %v", config.Entries[0].FileTypes)
 	}
 }
 

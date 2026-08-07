@@ -107,7 +107,7 @@ services:
 | 标签 | 必需 | 默认值 | 说明 |
 |------|------|--------|------|
 | `watchcow.enable` | 是 | - | 设为 `"true"` 启用 |
-| `watchcow.appname` | 否 | `watchcow.<容器名>` | 应用唯一标识（不得含有空格） |
+| `watchcow.appname` | 否 | `watchcow.<容器名>` | 应用唯一标识；以字母或数字开头，最长 128 个字符，仅允许 ASCII 字母、数字、`.`、`_`、`-` |
 | `watchcow.display_name` | 否 | 容器名 | 桌面及应用商店中的显示名称 |
 | `watchcow.desc` | 否 | 镜像名 | 应用描述 |
 | `watchcow.version` | 否 | `1.0.0` | 应用版本 |
@@ -116,12 +116,14 @@ services:
 
 ### 入口配置（默认入口）
 
+不带 `<entry>` 的标签定义不具名入口。它是最简配置方式，也是存在多个可见入口时优先从应用卡片打开的入口；生成 fnOS 配置后，其稳定入口 ID 为应用的 `appname`。
+
 | 标签 | 必需 | 默认值 | 说明 |
 |------|------|--------|------|
-| `watchcow.service_port` | 否 | 首个暴露端口 | Web UI 端口 |
-| `watchcow.protocol` | 否 | `http` | 协议 (`http`/`https`) |
-| `watchcow.path` | 否 | `/` | URL 路径 |
-| `watchcow.redirect` | 否 | - | 外部跳转 URL，设置后忽略 port/protocol/path，直接跳转到指定地址 |
+| `watchcow.service_port` | 否 | 首个暴露端口 | Web UI 端口；redirect 模式下用于探测和构造内网地址 |
+| `watchcow.protocol` | 否 | `http` | 协议 (`http`/`https`)；redirect 模式下用于内网地址 |
+| `watchcow.path` | 否 | `/` | URL 路径；redirect 模式下会合并到内网或外部目标 URL |
+| `watchcow.redirect` | 否 | - | 外部回退 URL；默认先在内网探测本地端口，探测失败或从外网访问时跳转到该地址；HTTPS fnOS 页面打开本地 HTTP 服务时浏览器无法执行探测，会直接尝试内网地址 |
 | `watchcow.redirect_force_external` | 否 | `false` | 设为 `true` 时跳过内网检测，始终跳转到外部地址（适用于 Vaultwarden 等必须通过域名 HTTPS 访问的应用） |
 | `watchcow.ui_type` | 否 | `url` | UI 类型 (`url` 新标签页 / `iframe` 桌面窗口) |
 | `watchcow.all_users` | 否 | `true` | 访问权限 (`true` 所有用户 / `false` 仅管理员) |
@@ -136,6 +138,8 @@ services:
 ### 多入口配置
 
 WatchCow 支持为单个应用配置多个入口。使用 `watchcow.<entry>.<field>` 格式定义命名入口：
+
+建议继续使用不具名入口作为主入口，仅为管理后台、编辑器等附加任务增加命名入口。`_` 保留用于 CGI 路由中表示不具名入口，不能用作 `<entry>` 名称。
 
 | 标签 | 说明 |
 |------|------|
@@ -167,10 +171,10 @@ services:
       watchcow.enable: "true"
       watchcow.display_name: "我的应用"
 
-      # 主入口
-      watchcow.main.service_port: "8080"
-      watchcow.main.path: "/"
-      watchcow.main.title: "我的应用"
+      # 不具名主入口
+      watchcow.service_port: "8080"
+      watchcow.path: "/"
+      watchcow.title: "我的应用"
 
       # 管理后台入口
       watchcow.admin.service_port: "8081"

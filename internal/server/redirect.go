@@ -80,7 +80,8 @@ type redirectTemplateData struct {
 	RedirectPath  string // base path from redirect config
 	RedirectQuery string // query string from redirect config
 	// Container info
-	ContainerPort string
+	ContainerProtocol string
+	ContainerPort     string
 	// Request components
 	Path        string // path from request
 	QueryString string // query string from request
@@ -136,7 +137,7 @@ func (h *RedirectHandler) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	h.outputHTML(w, entry.Redirect, entry.Port, path, sanitizeQueryString(r.URL.RawQuery), entry.ForceExternal)
+	h.outputHTML(w, entry.Redirect, entry.Protocol, entry.Port, path, sanitizeQueryString(r.URL.RawQuery), entry.ForceExternal)
 }
 
 // outputError outputs an error page
@@ -147,7 +148,7 @@ func (h *RedirectHandler) outputError(w http.ResponseWriter, status int, msg str
 }
 
 // outputHTML outputs the redirect HTML page with JavaScript
-func (h *RedirectHandler) outputHTML(w http.ResponseWriter, redirectHost, containerPort, path, queryString string, forceExternal bool) {
+func (h *RedirectHandler) outputHTML(w http.ResponseWriter, redirectHost, containerProtocol, containerPort, path, queryString string, forceExternal bool) {
 	w.Header().Set("Content-Type", "text/html; charset=utf-8")
 	w.WriteHeader(http.StatusOK)
 
@@ -179,14 +180,15 @@ func (h *RedirectHandler) outputHTML(w http.ResponseWriter, redirectHost, contai
 	}
 
 	data := redirectTemplateData{
-		RedirectBase:  parsed.Base,
-		RedirectPath:  parsed.Path,
-		RedirectQuery: parsed.Query,
-		ContainerPort: containerPort,
-		Path:          path,
-		QueryString:   queryString,
-		ForceExternal: forceExternal,
-		BulmaCSS:      template.CSS(cssBytes),
+		RedirectBase:      parsed.Base,
+		RedirectPath:      parsed.Path,
+		RedirectQuery:     parsed.Query,
+		ContainerProtocol: containerProtocol,
+		ContainerPort:     containerPort,
+		Path:              path,
+		QueryString:       queryString,
+		ForceExternal:     forceExternal,
+		BulmaCSS:          template.CSS(cssBytes),
 	}
 
 	if err := tmpl.Execute(w, data); err != nil {

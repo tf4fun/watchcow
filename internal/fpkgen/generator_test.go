@@ -1,0 +1,105 @@
+package fpkgen
+
+import (
+	"os"
+	"path/filepath"
+	"strings"
+	"testing"
+
+	dockercontainer "github.com/docker/docker/api/types/container"
+	"github.com/docker/go-connections/nat"
+
+	"watchcow/internal/app"
+)
+
+func TestExtractConfigRejectsUnsafeExplicitAppName(t *testing.T) {
+	generator := &Generator{}
+	container := &dockercontainer.InspectResponse{
+		ContainerJSONBase: &dockercontainer.ContainerJSONBase{Name: "/test"},
+		Config: &dockercontainer.Config{
+			Labels: map[string]string{"watchcow.appname": "unsafe/name"},
+		},
+	}
+
+	_, err := generator.extractConfig(container)
+	if err == nil || !strings.Contains(err.Error(), "invalid watchcow.appname") {
+		t.Fatalf("extractConfig() error = %v, want explicit appname validation error", err)
+	}
+}
+
+func TestGenerateFromConfigRejectsUnsafeAppNameBeforeEditingOutput(t *testing.T) {
+	appDir := t.TempDir()
+	marker := filepath.Join(appDir, "keep")
+	if err := os.WriteFile(marker, []byte("keep"), 0644); err != nil {
+		t.Fatal(err)
+	}
+
+	generator := &Generator{}
+	err := generator.GenerateFromConfig(&AppConfig{AppName: "unsafe/name"}, appDir)
+	if err == nil || !strings.Contains(err.Error(), "invalid appname") {
+		t.Fatalf("GenerateFromConfig() error = %v, want appname validation error", err)
+	}
+	if _, err := os.Stat(marker); err != nil {
+		t.Fatalf("invalid config modified output directory: %v", err)
+	}
+}
+
+func TestValidateAppNameRejectsOverlongIdentifier(t *testing.T) {
+	err := ValidateAppName(strings.Repeat("a", app.MaxAppNameLength+1))
+	if err == nil || !strings.Contains(err.Error(), "at most 128") {
+		t.Fatalf("ValidateAppName() error = %v, want length error", err)
+	}
+}
+
+func TestExtractFirstPortUsesStableContainerPortOrder(t *testing.T) {
+	container := &dockercontainer.InspectResponse{
+		ContainerJSONBase: &dockercontainer.ContainerJSONBase{
+			HostConfig: &dockercontainer.HostConfig{
+				PortBindings: nat.PortMap{
+					nat.Port("10000/tcp"): {{HostPort: "110000"}},
+					nat.Port("3000/tcp"):  {{HostPort: "13000"}},
+					nat.Port("53/udp"):    {{HostPort: "2053"}},
+				},
+			},
+		},
+	}
+
+	if got := extractFirstPort(container); got != "13000" {
+		t.Errorf("extractFirstPort() = %q, want %q", got, "13000")
+	}
+}
+
+func TestExtractFirstPortIgnoresUDPOnlyBindings(t *testing.T) {
+	container := &dockercontainer.InspectResponse{
+		ContainerJSONBase: &dockercontainer.ContainerJSONBase{
+			HostConfig: &dockercontainer.HostConfig{
+				PortBindings: nat.PortMap{
+					nat.Port("53/udp"): {{HostPort: "2053"}},
+				},
+			},
+		},
+	}
+
+	if got := extractFirstPort(container); got != "" {
+		t.Errorf("extractFirstPort() = %q, want no HTTP service port for UDP-only bindings", got)
+	}
+}
+
+func TestExtractFirstPortChoosesBindingDeterministically(t *testing.T) {
+	container := &dockercontainer.InspectResponse{
+		ContainerJSONBase: &dockercontainer.ContainerJSONBase{
+			HostConfig: &dockercontainer.HostConfig{
+				PortBindings: nat.PortMap{
+					nat.Port("8080/tcp"): {
+						{HostIP: "::", HostPort: "28080"},
+						{HostIP: "0.0.0.0", HostPort: "18080"},
+					},
+				},
+			},
+		},
+	}
+
+	if got := extractFirstPort(container); got != "18080" {
+		t.Errorf("extractFirstPort() = %q, want deterministic lowest host port", got)
+	}
+}

@@ -3,6 +3,8 @@
 package app
 
 import (
+	"crypto/sha256"
+	"encoding/hex"
 	"strings"
 	"sync"
 )
@@ -16,6 +18,7 @@ const (
 	StatusRunning     Status = "running"     // Running
 	StatusStopped     Status = "stopped"     // Stopped
 	StatusUninstalled Status = "uninstalled" // Uninstalled
+	MaxAppNameLength         = 128
 )
 
 // SanitizeAppNamePart keeps app name components within fnOS-friendly ASCII.
@@ -39,7 +42,24 @@ func SanitizeAppNamePart(name string) string {
 
 // DefaultAppName returns the default WatchCow app name for a container.
 func DefaultAppName(containerName string) string {
-	return "watchcow." + SanitizeAppNamePart(containerName)
+	return GeneratedAppName(containerName, "")
+}
+
+// GeneratedAppName returns a stable default identifier with an optional
+// uniqueness suffix while keeping it within the package identifier limit.
+func GeneratedAppName(containerName, suffix string) string {
+	appName := "watchcow." + SanitizeAppNamePart(containerName)
+	if suffix != "" {
+		appName += "." + SanitizeAppNamePart(suffix)
+	}
+	if len(appName) <= MaxAppNameLength {
+		return appName
+	}
+
+	digest := sha256.Sum256([]byte(appName))
+	hash := hex.EncodeToString(digest[:])[:8]
+	prefixLength := MaxAppNameLength - len(hash) - 1
+	return appName[:prefixLength] + "-" + hash
 }
 
 // EntryControl represents permission settings for an entry
@@ -51,25 +71,26 @@ type EntryControl struct {
 
 // RedirectConfig holds redirect configuration for an entry
 type RedirectConfig struct {
-	Host string // External redirect host (e.g., "https://example.com")
-	Port string // Container port to use when on local network
+	Host          string // External redirect host (e.g., "https://example.com")
+	Port          string // Container port to use when on local network
+	ForceExternal bool   // Skip local network detection
 }
 
 // Entry represents a UI entry point for an app
 type Entry struct {
-	Name      string        // Entry identifier (empty for default entry)
-	Title     string        // Display title
-	Protocol  string        // http or https
-	Port      string        // Service port
-	Path      string        // URL path
-	UIType    string        // "url" (new tab) or "iframe" (desktop window)
-	AllUsers  bool          // Access permission (true = all users)
-	Icon      string        // Icon source: URL (file:// or http://) from labels, or base64 data from dashboard
-	FileTypes []string      // Supported file types for right-click menu
-	NoDisplay bool          // Hide from desktop (only show in right-click menu)
-	Control   *EntryControl // Permission control settings
-	Redirect  string        // External redirect host for CGI mode
-	ForceExternal bool      // Skip local network detection, always redirect to external URL
+	Name          string        // Entry identifier (empty for default entry)
+	Title         string        // Display title
+	Protocol      string        // http or https
+	Port          string        // Service port
+	Path          string        // URL path
+	UIType        string        // "url" (new tab) or "iframe" (desktop window)
+	AllUsers      bool          // Access permission (true = all users)
+	Icon          string        // Icon source: URL (file:// or http://) from labels, or base64 data from dashboard
+	FileTypes     []string      // Supported file types for right-click menu
+	NoDisplay     bool          // Hide from desktop (only show in right-click menu)
+	Control       *EntryControl // Permission control settings
+	Redirect      string        // External redirect host for CGI mode
+	ForceExternal bool          // Skip local network detection, always redirect to external URL
 }
 
 // GetRedirectConfig returns RedirectConfig if redirect is enabled, nil otherwise
@@ -78,8 +99,9 @@ func (e *Entry) GetRedirectConfig() *RedirectConfig {
 		return nil
 	}
 	return &RedirectConfig{
-		Host: e.Redirect,
-		Port: e.Port,
+		Host:          e.Redirect,
+		Port:          e.Port,
+		ForceExternal: e.ForceExternal,
 	}
 }
 
@@ -220,9 +242,16 @@ func (r *Registry) List() []*App {
 
 // UpdateStatus updates the status of an app.
 func (r *Registry) UpdateStatus(appName string, status Status) bool {
-	if app := r.Get(appName); app != nil {
-		app.Status = status
-		return true
+	for {
+		value, ok := r.apps.Load(appName)
+		if !ok {
+			return false
+		}
+		current := value.(*App)
+		next := *current
+		next.Status = status
+		if r.apps.CompareAndSwap(appName, current, &next) {
+			return true
+		}
 	}
-	return false
 }

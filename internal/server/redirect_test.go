@@ -22,6 +22,7 @@ func createTestRegistry() *app.Registry {
 			{
 				Name:     "",
 				Title:    "Nginx",
+				Protocol: "http",
 				Port:     "27890",
 				Redirect: "https://www.bilibili.com",
 			},
@@ -93,6 +94,20 @@ func TestRedirectHandler_AppLookup(t *testing.T) {
 	}
 	if !strings.Contains(body, "/index.html") {
 		t.Errorf("response should contain path '/index.html'")
+	}
+	if !strings.Contains(body, `const CONTAINER_PROTOCOL = 'http'`) {
+		t.Error("response should use the entry protocol for local redirects")
+	}
+	if strings.Contains(body, "localAccessible || isLocalHostname()") {
+		t.Error("failed local probes must fall back to the external redirect")
+	}
+	if !strings.Contains(body, "Boolean(CONTAINER_PORT) && window.location.protocol === 'https:' && CONTAINER_PROTOCOL !== 'https'") {
+		t.Error("HTTPS pages must bypass the browser-blocked probe for local HTTP services")
+	}
+	mixedContentCheck := strings.Index(body, "if (isMixedContentProbeBlocked())")
+	localProbe := strings.Index(body, "const localAccessible = await checkLocalAccess()")
+	if mixedContentCheck == -1 || localProbe == -1 || mixedContentCheck > localProbe {
+		t.Error("mixed-content fallback must run before the local fetch probe")
 	}
 }
 

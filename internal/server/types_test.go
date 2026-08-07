@@ -62,10 +62,34 @@ func TestNewContainerKey(t *testing.T) {
 	}
 }
 
+func TestNewContainerKeyForContainerDistinguishesNoPortContainers(t *testing.T) {
+	a := NewContainerKeyForContainer("redis:latest", "redis-a", nil)
+	b := NewContainerKeyForContainer("redis:latest", "redis-b", nil)
+	if a == b || a != "redis:latest|@redis-a" || b != "redis:latest|@redis-b" {
+		t.Fatalf("named no-port keys are not distinct: a=%q b=%q", a, b)
+	}
+}
+
+func TestNewContainerKeyForContainerDistinguishesSamePortContainers(t *testing.T) {
+	ports := map[string]string{"8080/tcp": "18080"}
+	a := NewContainerKeyForContainer("web:latest", "web-a", ports)
+	b := NewContainerKeyForContainer("web:latest", "web-b", ports)
+	if a == b || a != "web:latest|@web-a;8080/tcp:18080" {
+		t.Fatalf("named port keys are not distinct: a=%q b=%q", a, b)
+	}
+}
+
 func TestContainerKey_String(t *testing.T) {
 	key := ContainerKey("nginx:alpine|80:8080")
 	if key.String() != "nginx:alpine|80:8080" {
 		t.Errorf("String() = %q, want %q", key.String(), "nginx:alpine|80:8080")
+	}
+}
+
+func TestFirstHostPortUsesStableContainerPortOrder(t *testing.T) {
+	ports := map[string]string{"10000": "110000", "3000": "13000"}
+	if got := firstHostPort(ports); got != "13000" {
+		t.Errorf("firstHostPort() = %q, want %q", got, "13000")
 	}
 }
 

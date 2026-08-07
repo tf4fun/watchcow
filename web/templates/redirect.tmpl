@@ -38,8 +38,9 @@
         const REDIRECT_BASE = '{{.RedirectBase | js}}';   // e.g., "https://example.com" or "example.com:8080"
         const REDIRECT_PATH = '{{.RedirectPath | js}}';   // e.g., "/api/v1" (sanitized)
         const REDIRECT_QUERY = '{{.RedirectQuery | js}}'; // e.g., "x=1" (sanitized)
-        // Container info
-        const CONTAINER_PORT = '{{.ContainerPort | js}}';
+		// Container info
+		const CONTAINER_PROTOCOL = '{{.ContainerProtocol | js}}';
+		const CONTAINER_PORT = '{{.ContainerPort | js}}';
         // Request components
         const PATH = '{{.Path | js}}';                    // e.g., "/path2" (sanitized)
         const QUERY_STRING = '{{.QueryString | js}}';     // e.g., "y=2" (sanitized)
@@ -84,9 +85,9 @@
         }
 
         // Build local URL using current hostname with container port
-        function buildLocalURL() {
-            const hostname = window.location.hostname;
-            const protocol = window.location.protocol;
+		function buildLocalURL() {
+			const hostname = window.location.hostname;
+			const protocol = CONTAINER_PROTOCOL === 'https' ? 'https:' : 'http:';
             let url = protocol + '//' + hostname + ':' + CONTAINER_PORT + PATH;
             if (QUERY_STRING) {
                 url += '?' + QUERY_STRING;
@@ -158,9 +159,16 @@
             return false;
         }
 
+		// Browsers block an HTTPS page from probing an HTTP service as active
+		// mixed content, even though a top-level navigation to it is allowed.
+		function isMixedContentProbeBlocked() {
+			return Boolean(CONTAINER_PORT) && window.location.protocol === 'https:' && CONTAINER_PROTOCOL !== 'https';
+		}
+
         // Try to connect to local port to verify accessibility
-        async function checkLocalAccess() {
-            const localURL = buildLocalURL();
+		async function checkLocalAccess() {
+			if (!CONTAINER_PORT) return false;
+			const localURL = buildLocalURL();
             setStatus('Testing local connection...');
 
             try {
@@ -198,12 +206,18 @@
 
             // First, quick check based on hostname
             if (isLocalHostname()) {
+				if (isMixedContentProbeBlocked()) {
+					setStatus('Local network detected');
+					redirectTo(buildLocalURL());
+					return;
+				}
+
                 setStatus('Local network detected, verifying access...');
 
                 // Try to verify local access
                 const localAccessible = await checkLocalAccess();
 
-                if (localAccessible || isLocalHostname()) {
+				if (localAccessible) {
                     // On local network, redirect to container port
                     redirectTo(buildLocalURL());
                     return;

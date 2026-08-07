@@ -5,6 +5,7 @@ import (
 	"log/slog"
 	"os"
 	"path/filepath"
+	"sort"
 	"sync"
 
 	"watchcow/internal/docker"
@@ -129,12 +130,37 @@ func (s *DashboardStorage) Set(cfg *StoredConfig) error {
 	return s.save()
 }
 
+// Replace stores cfg and removes obsolete keys in the same persisted update.
+func (s *DashboardStorage) Replace(obsolete []ContainerKey, cfg *StoredConfig) error {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+
+	for _, key := range obsolete {
+		if key != cfg.Key {
+			delete(s.configs, key)
+		}
+	}
+	s.configs[cfg.Key] = cloneStoredConfig(cfg)
+	return s.save()
+}
+
 // Delete removes a configuration.
 func (s *DashboardStorage) Delete(key ContainerKey) error {
 	s.mu.Lock()
 	defer s.mu.Unlock()
 
 	delete(s.configs, key)
+	return s.save()
+}
+
+// DeleteMany removes all supplied keys in one persisted update.
+func (s *DashboardStorage) DeleteMany(keys []ContainerKey) error {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+
+	for _, key := range keys {
+		delete(s.configs, key)
+	}
 	return s.save()
 }
 
@@ -168,33 +194,110 @@ func (s *DashboardStorage) GetByKey(key string) *docker.StoredConfig {
 	if !ok {
 		return nil
 	}
+	return convertStoredConfigToDocker(cfg)
+}
+
+// GetCompatibleCandidates implements docker.ConfigProvider for configs saved
+// before storage keys encoded the published port protocol.
+func (s *DashboardStorage) GetCompatibleCandidates(image string, identityPorts map[string]string, portOptions map[string][]string) []docker.StoredConfigMatch {
+	s.mu.RLock()
+	defer s.mu.RUnlock()
+
+	keys := s.findCompatibleKeysLocked(image, identityPorts, portOptions)
+	matches := make([]docker.StoredConfigMatch, 0, len(keys))
+	for _, key := range keys {
+		matches = append(matches, docker.StoredConfigMatch{
+			Key:    string(key),
+			Config: convertStoredConfigToDocker(s.configs[key]),
+		})
+	}
+	return matches
+}
+
+// MarkApplied clears Pending for the exact revision that was installed.
+func (s *DashboardStorage) MarkApplied(key, revision string) error {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+
+	cfg, ok := s.configs[ContainerKey(key)]
+	if !ok || cfg.Revision != revision || !cfg.Pending {
+		return nil
+	}
+	cfg = cloneStoredConfig(cfg)
+	cfg.Pending = false
+	s.configs[ContainerKey(key)] = cfg
+	return s.save()
+}
+
+// MigrateLegacy atomically moves a uniquely-owned legacy key to the canonical
+// protocol-qualified (or named no-port) key.
+func (s *DashboardStorage) MigrateLegacy(oldKey, newKey string) (*docker.StoredConfig, error) {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+
+	old := ContainerKey(oldKey)
+	current := ContainerKey(newKey)
+	if cfg, ok := s.configs[current]; ok {
+		return convertStoredConfigToDocker(cfg), nil
+	}
+	cfg, ok := s.configs[old]
+	if !ok {
+		return nil, nil
+	}
+	migrated := cloneStoredConfig(cfg)
+	migrated.Key = current
+	delete(s.configs, old)
+	s.configs[current] = migrated
+	if err := s.save(); err != nil {
+		delete(s.configs, current)
+		s.configs[old] = cfg
+		return nil, err
+	}
+	return convertStoredConfigToDocker(migrated), nil
+}
+
+// FindCompatibleKeys returns all legacy storage keys matching the container.
+func (s *DashboardStorage) FindCompatibleKeys(image string, identityPorts map[string]string, portOptions map[string][]string) []ContainerKey {
+	s.mu.RLock()
+	defer s.mu.RUnlock()
+	return s.findCompatibleKeysLocked(image, identityPorts, portOptions)
+}
+
+func (s *DashboardStorage) findCompatibleKeysLocked(image string, identityPorts map[string]string, portOptions map[string][]string) []ContainerKey {
+	keys := make([]string, 0, len(s.configs))
+	for key := range s.configs {
+		keys = append(keys, string(key))
+	}
+	sort.Strings(keys)
+	var matches []ContainerKey
+	for _, key := range keys {
+		if docker.MatchesCompatibleContainerKey(key, image, identityPorts, portOptions) {
+			matches = append(matches, ContainerKey(key))
+		}
+	}
+	return matches
+}
+
+func convertStoredConfigToDocker(cfg *StoredConfig) *docker.StoredConfig {
 
 	// Convert server.StoredConfig to docker.StoredConfig
 	result := &docker.StoredConfig{
+		Key:         string(cfg.Key),
 		AppName:     cfg.AppName,
 		DisplayName: cfg.DisplayName,
 		Description: cfg.Description,
 		Version:     cfg.Version,
 		Maintainer:  cfg.Maintainer,
 		IconBase64:  cfg.IconBase64,
+		Revision:    cfg.Revision,
+		Pending:     cfg.Pending,
 		Entries:     make([]docker.StoredEntry, 0, len(cfg.Entries)),
 	}
 
 	for _, e := range cfg.Entries {
-		result.Entries = append(result.Entries, docker.StoredEntry{
-			Name:          e.Name,
-			Title:         e.Title,
-			Protocol:      e.Protocol,
-			Port:          e.Port,
-			Path:          e.Path,
-			UIType:        e.UIType,
-			AllUsers:      e.AllUsers,
-			FileTypes:     e.FileTypes,
-			NoDisplay:     e.NoDisplay,
-			Redirect:      e.Redirect,
-			ForceExternal: e.ForceExternal,
-			IconBase64:    e.IconBase64,
-		})
+		converted := docker.StoredEntry(e)
+		converted.FileTypes = append([]string(nil), e.FileTypes...)
+		result.Entries = append(result.Entries, converted)
 	}
 
 	return result

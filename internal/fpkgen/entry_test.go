@@ -2,6 +2,7 @@ package fpkgen
 
 import (
 	"encoding/json"
+	"slices"
 	"strings"
 	"testing"
 )
@@ -241,6 +242,21 @@ func TestParseEntries_OnlyNamedEntries(t *testing.T) {
 	}
 }
 
+func TestParseEntriesSortsNamedEntries(t *testing.T) {
+	labels := map[string]string{
+		"watchcow.zeta.service_port":  "9000",
+		"watchcow.alpha.service_port": "3000",
+		"watchcow.main.service_port":  "8080",
+	}
+
+	entries := ParseEntries(labels, "Test App", "icon.png", "9090")
+	got := []string{entries[0].Name, entries[1].Name, entries[2].Name}
+	want := []string{"alpha", "main", "zeta"}
+	if !slices.Equal(got, want) {
+		t.Errorf("entry order = %v, want %v", got, want)
+	}
+}
+
 // TestParseEntries_FileTypes tests file_types parsing
 func TestParseEntries_FileTypes(t *testing.T) {
 	labels := map[string]string{
@@ -425,6 +441,21 @@ func TestTemplateData_DefaultLaunchEntry(t *testing.T) {
 	if data1.DefaultLaunchEntry != "watchcow.app1" {
 		t.Errorf("with default entry, DefaultLaunchEntry should be 'watchcow.app1', got %q", data1.DefaultLaunchEntry)
 	}
+	if data1.Port != "8080" {
+		t.Errorf("manifest port should match unnamed launch entry, got %q", data1.Port)
+	}
+
+	// The unnamed compatibility entry remains the launch target even if it is not first.
+	config1b := &AppConfig{
+		AppName: "watchcow.app1b",
+		Entries: []Entry{
+			{Name: "admin", Title: "Admin", Port: "8081"},
+			{Name: "", Title: "Main", Port: "8080"},
+		},
+	}
+	if got := NewTemplateData(config1b).DefaultLaunchEntry; got != "watchcow.app1b" {
+		t.Errorf("unnamed entry should be preferred, got %q", got)
+	}
 
 	// Test with only named entries (no default)
 	config2 := &AppConfig{
@@ -438,6 +469,9 @@ func TestTemplateData_DefaultLaunchEntry(t *testing.T) {
 	// Should use first displayable entry's full name
 	if data2.DefaultLaunchEntry != "watchcow.app2.main" {
 		t.Errorf("with only named entries, DefaultLaunchEntry should be 'watchcow.app2.main', got %q", data2.DefaultLaunchEntry)
+	}
+	if data2.Port != "8080" {
+		t.Errorf("manifest port should match named launch entry, got %q", data2.Port)
 	}
 
 	// Test with first entry having NoDisplay=true
@@ -466,6 +500,49 @@ func TestTemplateData_DefaultLaunchEntry(t *testing.T) {
 	// Should be empty when no displayable entries
 	if data4.DefaultLaunchEntry != "" {
 		t.Errorf("with all NoDisplay=true, DefaultLaunchEntry should be empty, got %q", data4.DefaultLaunchEntry)
+	}
+
+	config5 := &AppConfig{
+		AppName: "watchcow.app5",
+		Port:    "8080",
+		Entries: []Entry{{Name: "", Port: "8080", Redirect: "https://example.com"}},
+	}
+	data5 := NewTemplateData(config5)
+	if data5.Port != "" {
+		t.Errorf("CGI redirect entry should omit manifest service_port, got %q", data5.Port)
+	}
+}
+
+func TestManifestServicePortFollowsLaunchEntry(t *testing.T) {
+	engine, err := NewTemplateEngine()
+	if err != nil {
+		t.Fatalf("NewTemplateEngine() error = %v", err)
+	}
+
+	normal := NewTemplateData(&AppConfig{
+		AppName: "watchcow.normal",
+		Port:    "9999",
+		Entries: []Entry{{Name: "", Port: "8080"}},
+	})
+	manifest, err := engine.Render("manifest.tmpl", normal)
+	if err != nil {
+		t.Fatalf("render normal manifest: %v", err)
+	}
+	if !strings.Contains(string(manifest), "desktop_applaunchname=watchcow.normal\nservice_port=8080\n") {
+		t.Errorf("normal manifest does not align launch entry and service port:\n%s", manifest)
+	}
+
+	redirect := NewTemplateData(&AppConfig{
+		AppName: "watchcow.redirect",
+		Port:    "8080",
+		Entries: []Entry{{Name: "", Port: "8080", Redirect: "https://example.com"}},
+	})
+	manifest, err = engine.Render("manifest.tmpl", redirect)
+	if err != nil {
+		t.Fatalf("render redirect manifest: %v", err)
+	}
+	if strings.Contains(string(manifest), "service_port=") {
+		t.Errorf("CGI redirect manifest should omit service_port:\n%s", manifest)
 	}
 }
 
@@ -523,6 +600,28 @@ func TestHasDefaultEntry(t *testing.T) {
 			},
 			expected: true,
 		},
+		{
+			name: "has redirect",
+			labels: map[string]string{
+				"watchcow.redirect": "https://example.com",
+			},
+			expected: true,
+		},
+		{
+			name: "has redirect force external",
+			labels: map[string]string{
+				"watchcow.redirect_force_external": "true",
+			},
+			expected: true,
+		},
+		{
+			name: "empty root fields are not configured",
+			labels: map[string]string{
+				"watchcow.redirect": "",
+				"watchcow.icon":     "",
+			},
+			expected: false,
+		},
 	}
 
 	for _, tt := range tests {
@@ -535,12 +634,77 @@ func TestHasDefaultEntry(t *testing.T) {
 	}
 }
 
+func TestHasDefaultEntryRecognizesEveryEntryField(t *testing.T) {
+	for field := range entryFields {
+		t.Run(field, func(t *testing.T) {
+			labels := map[string]string{"watchcow." + field: "configured"}
+			if !hasDefaultEntry(labels) {
+				t.Errorf("default entry field %q was not recognized", field)
+			}
+		})
+	}
+}
+
+func TestParseEntriesCreatesLegacyDefaultWithoutEntryLabels(t *testing.T) {
+	entries := ParseEntries(map[string]string{"watchcow.enable": "true"}, "Test App", "icon.png", "9090")
+
+	if len(entries) != 1 {
+		t.Fatalf("expected 1 default entry, got %d", len(entries))
+	}
+	entry := entries[0]
+	if entry.Name != "" || entry.Port != "9090" || entry.Title != "Test App" {
+		t.Errorf("unexpected default entry: %+v", entry)
+	}
+}
+
+func TestParseEntriesPreservesStandaloneDefaultFields(t *testing.T) {
+	labels := map[string]string{
+		"watchcow.file_types":          "txt,md",
+		"watchcow.control.access_perm": "readonly",
+	}
+
+	entries := ParseEntries(labels, "Test App", "icon.png", "9090")
+	if len(entries) != 1 {
+		t.Fatalf("expected 1 default entry, got %d", len(entries))
+	}
+	entry := entries[0]
+	if len(entry.FileTypes) != 2 || entry.FileTypes[0] != "txt" || entry.FileTypes[1] != "md" {
+		t.Errorf("file types were not preserved: %v", entry.FileTypes)
+	}
+	if entry.Control == nil || entry.Control.AccessPerm != "readonly" {
+		t.Errorf("control was not preserved: %+v", entry.Control)
+	}
+}
+
+func TestParseEntriesDoesNotCreateDefaultFromEmptyRootLabel(t *testing.T) {
+	labels := map[string]string{
+		"watchcow.redirect":      "",
+		"watchcow.main.redirect": "https://example.com",
+	}
+
+	entries := ParseEntries(labels, "Test App", "icon.png", "9090")
+	if len(entries) != 1 || entries[0].Name != "main" {
+		t.Fatalf("empty root label created an unintended default entry: %+v", entries)
+	}
+}
+
+func TestParseEntriesIgnoresUnknownControlField(t *testing.T) {
+	labels := map[string]string{
+		"watchcow.main.redirect":            "https://example.com",
+		"watchcow.admin.control.acess_perm": "readonly",
+	}
+
+	entries := ParseEntries(labels, "Test App", "icon.png", "9090")
+	if len(entries) != 1 || entries[0].Name != "main" {
+		t.Fatalf("unknown control field created an entry: %+v", entries)
+	}
+}
+
 // TestParseEntries_Redirect tests redirect label parsing
 func TestParseEntries_Redirect(t *testing.T) {
 	labels := map[string]string{
-		"watchcow.enable":       "true",
-		"watchcow.service_port": "8080",
-		"watchcow.redirect":     "example.com:8080",
+		"watchcow.enable":   "true",
+		"watchcow.redirect": "example.com:8080",
 	}
 
 	entries := ParseEntries(labels, "Test App", "https://default.icon/icon.png", "9090")
@@ -552,6 +716,12 @@ func TestParseEntries_Redirect(t *testing.T) {
 	e := entries[0]
 	if e.Redirect != "example.com:8080" {
 		t.Errorf("expected redirect 'example.com:8080', got %q", e.Redirect)
+	}
+	if e.Name != "" {
+		t.Errorf("expected default entry, got name %q", e.Name)
+	}
+	if e.Port != "9090" {
+		t.Errorf("expected fallback port '9090', got %q", e.Port)
 	}
 }
 
@@ -627,6 +797,7 @@ func TestIsValidEntryName(t *testing.T) {
 		{name: "upper", in: "Admin01", want: true},
 		{name: "dash", in: "admin-panel", want: true},
 		{name: "underscore", in: "admin_panel", want: true},
+		{name: "redirect default sentinel", in: "_", want: false},
 		{name: "slash", in: "admin/panel", want: false},
 		{name: "dot", in: "admin.panel", want: false},
 		{name: "parent path", in: "../admin", want: false},
@@ -638,6 +809,17 @@ func TestIsValidEntryName(t *testing.T) {
 		t.Run(tt.name, func(t *testing.T) {
 			if got := isValidEntryName(tt.in); got != tt.want {
 				t.Errorf("isValidEntryName(%q) = %v, want %v", tt.in, got, tt.want)
+			}
+		})
+	}
+}
+
+func TestEntryFieldRootsAreReservedEntryNames(t *testing.T) {
+	for field := range entryFields {
+		root := strings.SplitN(field, ".", 2)[0]
+		t.Run(root, func(t *testing.T) {
+			if isValidEntryName(root) {
+				t.Errorf("entry field root %q should be reserved", root)
 			}
 		})
 	}
@@ -729,6 +911,27 @@ func TestGenerateUIConfigJSON_RedirectWithRootPath(t *testing.T) {
 	expectedURL := "/cgi/ThirdParty/watchcow.app/index.cgi/redirect/watchcow.app/_"
 	if entry.URL != expectedURL {
 		t.Errorf("URL should be %q, got %q", expectedURL, entry.URL)
+	}
+}
+
+func TestGenerateUIConfigJSON_NormalizesRedirectPath(t *testing.T) {
+	data := NewTemplateData(&AppConfig{
+		AppName: "watchcow.app",
+		Entries: []Entry{{
+			Path:     "dashboard",
+			Redirect: "https://example.com",
+		}},
+	})
+	jsonBytes, err := GenerateUIConfigJSON(data)
+	if err != nil {
+		t.Fatalf("GenerateUIConfigJSON() error = %v", err)
+	}
+	var config UIConfig
+	if err := json.Unmarshal(jsonBytes, &config); err != nil {
+		t.Fatalf("json.Unmarshal() error = %v", err)
+	}
+	if got := config.URL["watchcow.app"].URL; got != "/cgi/ThirdParty/watchcow.app/index.cgi/redirect/watchcow.app/_/dashboard" {
+		t.Errorf("normalized redirect URL = %q", got)
 	}
 }
 

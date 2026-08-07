@@ -217,15 +217,16 @@ func TestDashboardStorage_GetByKey(t *testing.T) {
 		Maintainer:  "Test",
 		Entries: []StoredEntry{
 			{
-				Name:      "",
-				Title:     "Nginx",
-				Protocol:  "http",
-				Port:      "80",
-				Path:      "/",
-				UIType:    "url",
-				AllUsers:  true,
-				Redirect:  "https://example.com",
-				FileTypes: []string{".html", ".css"},
+				Name:          "",
+				Title:         "Nginx",
+				Protocol:      "http",
+				Port:          "80",
+				Path:          "/",
+				UIType:        "url",
+				AllUsers:      true,
+				Redirect:      "https://example.com",
+				ForceExternal: true,
+				FileTypes:     []string{".html", ".css"},
 			},
 		},
 	})
@@ -250,10 +251,84 @@ func TestDashboardStorage_GetByKey(t *testing.T) {
 	if dockerCfg.Entries[0].Redirect != "https://example.com" {
 		t.Errorf("Entry[0].Redirect = %q, want %q", dockerCfg.Entries[0].Redirect, "https://example.com")
 	}
+	if !dockerCfg.Entries[0].ForceExternal {
+		t.Error("Entry[0].ForceExternal should be true")
+	}
+
+	dockerCfg.Entries[0].FileTypes[0] = "mutated"
+	fresh := storage.GetByKey(string(key))
+	if fresh.Entries[0].FileTypes[0] != ".html" {
+		t.Errorf("GetByKey returned shared FileTypes storage: %v", fresh.Entries[0].FileTypes)
+	}
 
 	// Test GetByKey for nonexistent key
 	if storage.GetByKey("nonexistent|") != nil {
 		t.Error("GetByKey() should return nil for nonexistent key")
+	}
+}
+
+func TestDashboardStorage_GetCompatibleLegacyKey(t *testing.T) {
+	t.Setenv("TRIM_PKGETC", t.TempDir())
+	storage, err := NewDashboardStorage()
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	key := ContainerKey("dns:latest|53:2053,80:8080")
+	if err := storage.Set(&StoredConfig{
+		Key:     key,
+		AppName: "watchcow.dns",
+		Entries: []StoredEntry{{FileTypes: []string{"zone"}}},
+	}); err != nil {
+		t.Fatal(err)
+	}
+	options := map[string][]string{
+		"53": {"1053", "2053"},
+		"80": {"8080"},
+	}
+
+	identityPorts := map[string]string{"53/tcp": "1053", "53/udp": "2053", "80/tcp": "8080"}
+	matched := storage.FindCompatibleKeys("dns:latest", identityPorts, options)
+	if len(matched) != 1 || matched[0] != key {
+		t.Fatalf("FindCompatibleKeys() = %q; want [%q]", matched, key)
+	}
+	matches := storage.GetCompatibleCandidates("dns:latest", identityPorts, options)
+	if len(matches) != 1 || matches[0].Config.AppName != "watchcow.dns" {
+		t.Fatalf("GetCompatibleCandidates() = %+v", matches)
+	}
+	config := matches[0].Config
+	config.Entries[0].FileTypes[0] = "mutated"
+	if fresh := storage.GetCompatibleCandidates("dns:latest", identityPorts, options)[0].Config; fresh.Entries[0].FileTypes[0] != "zone" {
+		t.Errorf("GetCompatibleCandidates returned shared entry state: %+v", fresh.Entries)
+	}
+
+	if got := storage.FindCompatibleKeys("dns:latest", identityPorts, map[string][]string{"53": {"9999"}, "80": {"8080"}}); len(got) != 0 {
+		t.Error("FindCompatibleKeys matched a host port outside the current binding set")
+	}
+}
+
+func TestDashboardStorage_MarkAppliedUsesRevisionCAS(t *testing.T) {
+	t.Setenv("TRIM_PKGETC", t.TempDir())
+	storage, err := NewDashboardStorage()
+	if err != nil {
+		t.Fatal(err)
+	}
+	key := ContainerKey("web:latest|8080/tcp:18080")
+	if err := storage.Set(&StoredConfig{Key: key, Revision: "new", Pending: true}); err != nil {
+		t.Fatal(err)
+	}
+
+	if err := storage.MarkApplied(string(key), "old"); err != nil {
+		t.Fatal(err)
+	}
+	if !storage.Get(key).Pending {
+		t.Error("stale install acknowledgement cleared the new revision")
+	}
+	if err := storage.MarkApplied(string(key), "new"); err != nil {
+		t.Fatal(err)
+	}
+	if storage.Get(key).Pending {
+		t.Error("matching install acknowledgement did not clear pending")
 	}
 }
 

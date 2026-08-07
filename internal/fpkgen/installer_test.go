@@ -1,6 +1,7 @@
 package fpkgen
 
 import (
+	"errors"
 	"os"
 	"path/filepath"
 	"strings"
@@ -110,6 +111,57 @@ func TestStartAppRunsStartWhenAppcenterStatusFails(t *testing.T) {
 	}
 }
 
+func TestUninstallPropagatesCLIError(t *testing.T) {
+	installer, _, logPath := newFakeAppcenterCLI(t, "2", "0")
+	t.Setenv("UNINSTALL_EXIT", "1")
+
+	err := installer.Uninstall("watchcow.test")
+	if err == nil || !strings.Contains(err.Error(), "appcenter-cli uninstall watchcow.test failed") {
+		t.Fatalf("Uninstall() error = %v, want CLI failure", err)
+	}
+
+	got := readCommandLog(t, logPath)
+	want := []string{"stop watchcow.test", "uninstall watchcow.test", "start watchcow.test"}
+	if strings.Join(got, "\n") != strings.Join(want, "\n") {
+		t.Fatalf("commands = %q, want %q", got, want)
+	}
+}
+
+func TestUninstallVerifiesAppWasRemoved(t *testing.T) {
+	installer, _, logPath := newFakeAppcenterCLI(t, "2", "0")
+
+	if err := installer.Uninstall("watchcow.test"); err != nil {
+		t.Fatalf("Uninstall() error = %v", err)
+	}
+	got := readCommandLog(t, logPath)
+	want := []string{"stop watchcow.test", "uninstall watchcow.test", "list"}
+	if strings.Join(got, "\n") != strings.Join(want, "\n") {
+		t.Fatalf("commands = %q, want %q", got, want)
+	}
+}
+
+func TestUninstallRejectsFalseSuccess(t *testing.T) {
+	installer, _, _ := newFakeAppcenterCLI(t, "2", "0")
+	t.Setenv("APP_LIST_OUTPUT", "│ watchcow.test │ running │\n")
+
+	err := installer.Uninstall("watchcow.test")
+	if err == nil || !strings.Contains(err.Error(), "is still installed") {
+		t.Fatalf("Uninstall() error = %v, want failed verification", err)
+	}
+}
+
+func TestUninstallReportsFailedRestore(t *testing.T) {
+	installer, _, _ := newFakeAppcenterCLI(t, "2", "0")
+	t.Setenv("UNINSTALL_EXIT", "1")
+	t.Setenv("START_EXIT", "1")
+
+	err := installer.Uninstall("watchcow.test")
+	var restoreErr *RestoreStoppedAppError
+	if !errors.As(err, &restoreErr) || restoreErr.RestoreErr == nil {
+		t.Fatalf("Uninstall() error = %v, want RestoreStoppedAppError", err)
+	}
+}
+
 func TestParseInstallVolume(t *testing.T) {
 	tests := []struct {
 		name   string
@@ -160,6 +212,16 @@ fi
 if [ "$1" = "start" ]; then
   exit "$START_EXIT"
 fi
+if [ "$1" = "stop" ]; then
+  exit 0
+fi
+if [ "$1" = "uninstall" ]; then
+  exit "$UNINSTALL_EXIT"
+fi
+if [ "$1" = "list" ]; then
+  printf '%s' "$APP_LIST_OUTPUT"
+  exit "$APP_LIST_EXIT"
+fi
 exit 1
 `
 
@@ -173,6 +235,9 @@ exit 1
 	t.Setenv("APP_STATUS_OUTPUT", "running")
 	t.Setenv("APP_STATUS_EXIT", "0")
 	t.Setenv("START_EXIT", "0")
+	t.Setenv("UNINSTALL_EXIT", "0")
+	t.Setenv("APP_LIST_OUTPUT", "")
+	t.Setenv("APP_LIST_EXIT", "0")
 
 	return &Installer{appcenterCLIPath: scriptPath}, appDir, logPath
 }

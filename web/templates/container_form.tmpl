@@ -111,7 +111,7 @@
 
         <h5 class="title is-5">入口配置</h5>
 
-        {{$entry := index $.Config.Entries 0}}
+		{{$entry := $.Entry}}
 
         <div class="field">
             <label class="label">标题</label>
@@ -193,6 +193,13 @@
                        placeholder="https://example.com">
             </div>
             <p class="help">远程访问时的外部跳转 URL（通过 CGI 重定向）</p>
+        </div>
+
+        <div class="field">
+            <label class="checkbox">
+                <input type="checkbox" name="entry_redirect_force_external" value="true" {{if $entry.ForceExternal}}checked{{end}}>
+                始终使用外部地址
+            </label>
         </div>
 
         <div class="field">

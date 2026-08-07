@@ -3,7 +3,10 @@ package server
 import (
 	"bytes"
 	"context"
+	"crypto/sha256"
 	"encoding/base64"
+	"encoding/hex"
+	"encoding/json"
 	"fmt"
 	"html/template"
 	"image"
@@ -36,7 +39,7 @@ type AppTrigger interface {
 	// TriggerInstall triggers app installation for a container using stored config.
 	TriggerInstall(containerID string, storedConfig *docker.StoredConfig)
 	// TriggerUninstall triggers app uninstallation by app name.
-	TriggerUninstall(appName string)
+	TriggerUninstall(containerID, appName, configKey string)
 }
 
 // DashboardHandler provides HTTP handlers for the dashboard.
@@ -103,25 +106,76 @@ func (h *DashboardHandler) listContainers(ctx context.Context) ([]ContainerInfo,
 	}
 
 	result := make([]ContainerInfo, 0, len(containers))
-	for _, c := range containers {
-		key := NewContainerKey(c.Image, c.Ports)
+	legacyCandidates := make([][]ContainerKey, len(containers))
+	legacyClaims := make(map[ContainerKey]int)
+	exactKeys := make(map[ContainerKey]bool)
+	for i, c := range containers {
+		hasCanonicalIdentity := c.IdentityPorts != nil
+		identityPorts := c.IdentityPorts
+		if identityPorts == nil {
+			identityPorts = c.Ports
+		}
+		key := NewContainerKey(c.Image, identityPorts)
+		if hasCanonicalIdentity {
+			key = NewContainerKeyForContainer(c.Image, c.Name, identityPorts)
+		}
+		legacyCandidates[i] = h.storage.FindCompatibleKeys(c.Image, identityPorts, c.LegacyPortOptions)
 		hasLabelConfig := c.Labels["watchcow.enable"] == "true"
-		hasStoredConfig := h.storage.Has(key)
 
 		info := ContainerInfo{
-			ID:              c.ID,
-			Name:            c.Name,
-			Image:           c.Image,
-			State:           c.State,
-			Ports:           c.Ports,
-			Labels:          c.Labels,
-			NetworkMode:     c.NetworkMode,
-			Key:             key,
-			HasLabelConfig:  hasLabelConfig,
-			HasStoredConfig: hasStoredConfig,
-			Config:          h.storage.Get(key),
+			ID:             c.ID,
+			Name:           c.Name,
+			Image:          c.Image,
+			State:          c.State,
+			Ports:          c.Ports,
+			Labels:         c.Labels,
+			NetworkMode:    c.NetworkMode,
+			Key:            key,
+			HasLabelConfig: hasLabelConfig,
+			ConfigKey:      key,
+		}
+		if h.storage.Has(key) {
+			exactKeys[key] = true
 		}
 		result = append(result, info)
+	}
+	for i, candidates := range legacyCandidates {
+		filtered := candidates[:0]
+		for _, candidate := range candidates {
+			if exactKeys[candidate] {
+				continue
+			}
+			filtered = append(filtered, candidate)
+			legacyClaims[candidate]++
+		}
+		legacyCandidates[i] = filtered
+	}
+
+	for i := range result {
+		info := &result[i]
+		if h.storage.Has(info.Key) {
+			for _, candidate := range legacyCandidates[i] {
+				if legacyClaims[candidate] == 1 && !isNamedContainerKey(candidate) {
+					info.LegacyConfigKeys = append(info.LegacyConfigKeys, candidate)
+				}
+			}
+			info.HasStoredConfig = true
+			info.Config = h.storage.Get(info.Key)
+			continue
+		}
+		if len(legacyCandidates[i]) == 1 && legacyClaims[legacyCandidates[i][0]] == 1 {
+			info.ConfigKey = legacyCandidates[i][0]
+			info.LegacyConfigKeys = []ContainerKey{legacyCandidates[i][0]}
+			info.HasStoredConfig = true
+			info.Config = h.storage.Get(info.ConfigKey)
+		} else if len(legacyCandidates[i]) > 0 {
+			info.LegacyConfigConflict = true
+			for _, candidate := range legacyCandidates[i] {
+				if legacyClaims[candidate] == 1 {
+					info.LegacyConfigKeys = append(info.LegacyConfigKeys, candidate)
+				}
+			}
+		}
 	}
 
 	// Sort by name
@@ -130,6 +184,11 @@ func (h *DashboardHandler) listContainers(ctx context.Context) ([]ContainerInfo,
 	})
 
 	return result, nil
+}
+
+func isNamedContainerKey(key ContainerKey) bool {
+	_, identity, ok := strings.Cut(string(key), "|")
+	return ok && strings.HasPrefix(identity, "@")
 }
 
 // getContainer fetches a single container by key.
@@ -227,6 +286,7 @@ func (h *DashboardHandler) handleContainerList(w http.ResponseWriter, r *http.Re
 type containerFormData struct {
 	Container *ContainerInfo
 	Config    *StoredConfig
+	Entry     *StoredEntry
 }
 
 // handleContainerForm renders the container config form partial (HTMX).
@@ -246,15 +306,17 @@ func (h *DashboardHandler) handleContainerForm(w http.ResponseWriter, r *http.Re
 	}
 
 	// Get stored config or create default
-	config := h.storage.Get(container.Key)
+	config := h.storage.Get(container.ConfigKey)
 	if config == nil {
 		// Create default config from container info
 		config = h.createDefaultConfig(container)
 	}
 
+	entry := defaultDashboardEntry(config, container)
 	data := containerFormData{
 		Container: container,
 		Config:    config,
+		Entry:     &entry,
 	}
 
 	w.Header().Set("Content-Type", "text/html; charset=utf-8")
@@ -284,6 +346,10 @@ func (h *DashboardHandler) handleContainerSave(w http.ResponseWriter, r *http.Re
 		h.renderError(w, http.StatusForbidden, "标签配置的容器无法修改")
 		return
 	}
+	if container.LegacyConfigConflict {
+		h.renderError(w, http.StatusConflict, "检测到无法唯一归属的旧版配置，请停止或移除冲突容器后重试")
+		return
+	}
 
 	// Parse form (supports both multipart and urlencoded)
 	contentType := r.Header.Get("Content-Type")
@@ -303,22 +369,18 @@ func (h *DashboardHandler) handleContainerSave(w http.ResponseWriter, r *http.Re
 	key := container.Key
 
 	// Get existing config or create new
-	config := h.storage.Get(key)
+	config := h.storage.Get(container.ConfigKey)
 	if config == nil {
 		config = &StoredConfig{
 			Key:       key,
 			CreatedAt: time.Now(),
 		}
 	}
+	config.Key = key
 
 	// Auto-generate appName (not user-editable)
 	// Include first host port for uniqueness
-	appName := app.DefaultAppName(container.Name)
-	for _, hostPort := range container.Ports {
-		appName = appName + "." + app.SanitizeAppNamePart(hostPort)
-		break
-	}
-	config.AppName = appName
+	config.AppName = app.GeneratedAppName(container.Name, firstHostPort(container.Ports))
 
 	config.DisplayName = r.FormValue("display_name")
 	config.Description = r.FormValue("description")
@@ -326,8 +388,9 @@ func (h *DashboardHandler) handleContainerSave(w http.ResponseWriter, r *http.Re
 	config.Maintainer = r.FormValue("maintainer")
 	config.UpdatedAt = time.Now()
 
-	// Parse entries
-	config.Entries = h.parseEntriesFromForm(r)
+	// The dashboard edits the unnamed compatibility entry. Preserve fields and
+	// named entries that are not represented by the current form.
+	config.Entries = mergeDashboardEntries(config.Entries, h.parseEntryFromForm(r))
 
 	// Validate defaults
 	if config.DisplayName == "" {
@@ -353,9 +416,11 @@ func (h *DashboardHandler) handleContainerSave(w http.ResponseWriter, r *http.Re
 	} else if err != http.ErrMissingFile {
 		slog.Debug("FormFile error", "error", err)
 	}
+	config.Pending = true
+	config.Revision = dashboardConfigRevision(config)
 
 	// Save
-	if err := h.storage.Set(config); err != nil {
+	if err := h.storage.Replace(container.LegacyConfigKeys, config); err != nil {
 		slog.Error("Failed to save config", "key", key, "error", err)
 		h.renderError(w, http.StatusInternalServerError, "保存配置失败")
 		return
@@ -394,27 +459,30 @@ func (h *DashboardHandler) handleContainerDelete(w http.ResponseWriter, r *http.
 		h.renderError(w, http.StatusNotFound, "未找到容器")
 		return
 	}
-
-	key := container.Key
-
-	// Get config before deletion to find app name
-	config := h.storage.Get(key)
-	appName := ""
-	if config != nil {
-		appName = config.AppName
+	if container.LegacyConfigConflict && len(container.LegacyConfigKeys) == 0 {
+		h.renderError(w, http.StatusConflict, "旧版配置同时匹配多个容器，无法安全删除；请先停止或移除冲突容器")
+		return
 	}
 
-	if err := h.storage.Delete(key); err != nil {
-		slog.Error("Failed to delete config", "key", key, "error", err)
+	deleteKeys := append([]ContainerKey{container.Key}, container.LegacyConfigKeys...)
+	appNames := make(map[string]bool)
+	for _, key := range deleteKeys {
+		if config := h.storage.Get(key); config != nil && config.AppName != "" {
+			appNames[config.AppName] = true
+		}
+	}
+	if err := h.storage.DeleteMany(deleteKeys); err != nil {
+		slog.Error("Failed to delete config", "key", container.ConfigKey, "error", err)
 		h.renderError(w, http.StatusInternalServerError, "删除配置失败")
 		return
 	}
 
-	slog.Info("Deleted container config", "key", key)
+	slog.Info("Deleted container config", "key", container.ConfigKey)
 
-	// Trigger uninstall if app was configured
-	if appName != "" && h.trigger != nil {
-		h.trigger.TriggerUninstall(appName)
+	if h.trigger != nil {
+		for appName := range appNames {
+			h.trigger.TriggerUninstall(containerID, appName, string(container.Key))
+		}
 	}
 
 	// Return success message with button to go back
@@ -455,19 +523,18 @@ func readLimited(r io.Reader, maxBytes int64) ([]byte, error) {
 	return data, nil
 }
 
-// parseEntriesFromForm extracts entries from form data.
-func (h *DashboardHandler) parseEntriesFromForm(r *http.Request) []StoredEntry {
-	// Dashboard supports single entry only
-	// For multi-entry, use Docker labels
+// parseEntryFromForm extracts the unnamed entry from form data.
+func (h *DashboardHandler) parseEntryFromForm(r *http.Request) StoredEntry {
 	entry := StoredEntry{
-		Name:     "", // Default entry
-		Title:    r.FormValue("entry_title"),
-		Protocol: r.FormValue("entry_protocol"),
-		Port:     r.FormValue("entry_port"),
-		Path:     r.FormValue("entry_path"),
-		UIType:   r.FormValue("entry_ui_type"),
-		AllUsers: r.FormValue("entry_all_users") == "true",
-		Redirect: r.FormValue("entry_redirect"),
+		Name:          "",
+		Title:         r.FormValue("entry_title"),
+		Protocol:      r.FormValue("entry_protocol"),
+		Port:          r.FormValue("entry_port"),
+		Path:          r.FormValue("entry_path"),
+		UIType:        r.FormValue("entry_ui_type"),
+		AllUsers:      r.FormValue("entry_all_users") == "true",
+		Redirect:      r.FormValue("entry_redirect"),
+		ForceExternal: r.FormValue("entry_redirect_force_external") == "true",
 	}
 
 	// Default protocol
@@ -485,7 +552,51 @@ func (h *DashboardHandler) parseEntriesFromForm(r *http.Request) []StoredEntry {
 		entry.UIType = "url"
 	}
 
-	return []StoredEntry{entry}
+	return entry
+}
+
+func mergeDashboardEntries(existing []StoredEntry, submitted StoredEntry) []StoredEntry {
+	result := make([]StoredEntry, 0, max(1, len(existing)))
+	updatedDefault := false
+	for _, entry := range existing {
+		if entry.Name == "" && !updatedDefault {
+			entry.Title = submitted.Title
+			entry.Protocol = submitted.Protocol
+			entry.Port = submitted.Port
+			entry.Path = submitted.Path
+			entry.UIType = submitted.UIType
+			entry.AllUsers = submitted.AllUsers
+			entry.Redirect = submitted.Redirect
+			entry.ForceExternal = submitted.ForceExternal
+			updatedDefault = true
+		}
+		entry.FileTypes = append([]string(nil), entry.FileTypes...)
+		result = append(result, entry)
+	}
+	if !updatedDefault {
+		result = append([]StoredEntry{submitted}, result...)
+	}
+	return result
+}
+
+func defaultDashboardEntry(config *StoredConfig, container *ContainerInfo) StoredEntry {
+	for _, entry := range config.Entries {
+		if entry.Name == "" {
+			entry.FileTypes = append([]string(nil), entry.FileTypes...)
+			return entry
+		}
+	}
+	return createDefaultEntry(container)
+}
+
+func createDefaultEntry(container *ContainerInfo) StoredEntry {
+	return StoredEntry{
+		Protocol: "http",
+		Port:     firstHostPort(container.Ports),
+		Path:     "/",
+		UIType:   "url",
+		AllUsers: true,
+	}
 }
 
 // createDefaultConfig creates a default configuration for a container.
@@ -501,54 +612,44 @@ func (h *DashboardHandler) createDefaultConfig(container *ContainerInfo) *Stored
 		UpdatedAt:   time.Now(),
 	}
 
-	// Create default entry with first available port
-	entry := StoredEntry{
-		Protocol: "http",
-		Path:     "/",
-		UIType:   "url",
-		AllUsers: true,
-	}
-
-	// Find first host port
-	for _, hostPort := range container.Ports {
-		entry.Port = hostPort
-		break
-	}
-
-	config.Entries = []StoredEntry{entry}
+	config.Entries = []StoredEntry{createDefaultEntry(container)}
 	return config
 }
 
 // convertToDockerConfig converts server.StoredConfig to docker.StoredConfig.
 func (h *DashboardHandler) convertToDockerConfig(config *StoredConfig) *docker.StoredConfig {
 	result := &docker.StoredConfig{
+		Key:         string(config.Key),
 		AppName:     config.AppName,
 		DisplayName: config.DisplayName,
 		Description: config.Description,
 		Version:     config.Version,
 		Maintainer:  config.Maintainer,
 		IconBase64:  config.IconBase64,
+		Revision:    config.Revision,
+		Pending:     config.Pending,
 		Entries:     make([]docker.StoredEntry, 0, len(config.Entries)),
 	}
 
 	for _, e := range config.Entries {
-		result.Entries = append(result.Entries, docker.StoredEntry{
-			Name:          e.Name,
-			Title:         e.Title,
-			Protocol:      e.Protocol,
-			Port:          e.Port,
-			Path:          e.Path,
-			UIType:        e.UIType,
-			AllUsers:      e.AllUsers,
-			FileTypes:     e.FileTypes,
-			NoDisplay:     e.NoDisplay,
-			Redirect:      e.Redirect,
-			ForceExternal: e.ForceExternal,
-			IconBase64:    e.IconBase64,
-		})
+		converted := docker.StoredEntry(e)
+		converted.FileTypes = append([]string(nil), e.FileTypes...)
+		result.Entries = append(result.Entries, converted)
 	}
 
 	return result
+}
+
+func dashboardConfigRevision(config *StoredConfig) string {
+	snapshot := *config
+	snapshot.Revision = ""
+	snapshot.Pending = false
+	data, err := json.Marshal(snapshot)
+	if err != nil {
+		return fmt.Sprintf("%d", config.UpdatedAt.UnixNano())
+	}
+	digest := sha256.Sum256(data)
+	return hex.EncodeToString(digest[:16])
 }
 
 // renderError renders an error message.

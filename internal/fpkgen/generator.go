@@ -6,10 +6,14 @@ import (
 	"log/slog"
 	"os"
 	"path/filepath"
+	"regexp"
+	"sort"
+	"strconv"
 	"strings"
 
 	dockercontainer "github.com/docker/docker/api/types/container"
 	"github.com/docker/docker/client"
+	"github.com/docker/go-connections/nat"
 
 	"watchcow/internal/app"
 )
@@ -50,7 +54,10 @@ func (g *Generator) GenerateFromContainer(ctx context.Context, containerID strin
 	}
 
 	// 2. Extract configuration from container
-	config := g.extractConfig(&container)
+	config, err := g.extractConfig(&container)
+	if err != nil {
+		return nil, "", err
+	}
 
 	// 3. Create temp directory for app package
 	appDir, err := os.MkdirTemp("", "watchcow-"+config.AppName+"-")
@@ -84,6 +91,13 @@ func (g *Generator) GenerateFromContainer(ctx context.Context, containerID strin
 // GenerateFromConfig creates fnOS app structure from an AppConfig directly
 // This is useful for testing/debugging without needing a real Docker container
 func (g *Generator) GenerateFromConfig(config *AppConfig, appDir string) error {
+	if config == nil {
+		return fmt.Errorf("app config is required")
+	}
+	if err := ValidateAppName(config.AppName); err != nil {
+		return err
+	}
+
 	// Remove existing directory if exists
 	if err := os.RemoveAll(appDir); err != nil {
 		return fmt.Errorf("failed to remove existing directory: %w", err)
@@ -173,14 +187,17 @@ func (g *Generator) generateFromTemplates(appDir string, data *TemplateData) err
 //	watchcow.protocol     -> UI config (http/https)
 //	watchcow.path         -> UI config (url path)
 //	watchcow.icon         -> app icon URL
-func (g *Generator) extractConfig(container *dockercontainer.InspectResponse) *AppConfig {
+func (g *Generator) extractConfig(container *dockercontainer.InspectResponse) (*AppConfig, error) {
 	name := strings.TrimPrefix(container.Name, "/")
 	labels := container.Config.Labels
 
 	appName := getLabel(labels, "watchcow.appname", app.DefaultAppName(name))
+	if err := ValidateAppName(appName); err != nil {
+		return nil, fmt.Errorf("invalid watchcow.appname %q: %w", appName, err)
+	}
 
 	defaultIcon := getLabel(labels, "watchcow.icon", buildIconURLFromImage(container.Config.Image)) // URL → URLIconSource
-	displayName := getLabel(labels, "watchcow.display_name", prettifyName(name))
+	displayName := getLabel(labels, "watchcow.display_name", PrettifyName(name))
 
 	config := &AppConfig{
 		AppName:       appName,
@@ -209,25 +226,6 @@ func (g *Generator) extractConfig(container *dockercontainer.InspectResponse) *A
 	// Parse multi-entry configuration
 	config.Entries = ParseEntries(labels, displayName, defaultIcon, config.Port)
 
-	// If no entries configured, create a default entry for backward compatibility
-	if len(config.Entries) == 0 {
-		config.Entries = []Entry{{
-			Name:      "",
-			Title:     displayName,
-			Protocol:  config.Protocol,
-			Port:      config.Port,
-			Path:      config.Path,
-			UIType:    config.UIType,
-			AllUsers:  config.AllUsers,
-			Icon:      defaultIcon,
-			FileTypes: nil,
-			NoDisplay: getLabel(labels, "watchcow.no_display", "false") == "true",
-			Control:   nil,
-			Redirect:  getLabel(labels, "watchcow.redirect", ""),
-			ForceExternal: getLabel(labels, "watchcow.redirect_force_external", "false") == "true",
-		}}
-	}
-
 	// Extract volumes
 	for _, mount := range container.Mounts {
 		config.Volumes = append(config.Volumes, VolumeMapping{
@@ -245,7 +243,21 @@ func (g *Generator) extractConfig(container *dockercontainer.InspectResponse) *A
 		config.RestartPolicy = "unless-stopped"
 	}
 
-	return config
+	return config, nil
+}
+
+var validAppNamePattern = regexp.MustCompile(`^[A-Za-z0-9][A-Za-z0-9._-]*$`)
+
+// ValidateAppName validates the identifier used by the manifest, CGI route,
+// and temporary package directory.
+func ValidateAppName(appName string) error {
+	if len(appName) > app.MaxAppNameLength {
+		return fmt.Errorf("invalid appname %q: must be at most %d ASCII characters", appName, app.MaxAppNameLength)
+	}
+	if !validAppNamePattern.MatchString(appName) {
+		return fmt.Errorf("invalid appname %q: use ASCII letters, numbers, '.', '_' or '-', starting with a letter or number", appName)
+	}
+	return nil
 }
 
 // createDirectoryStructure creates all required directories
@@ -311,7 +323,27 @@ func extractFirstPort(container *dockercontainer.InspectResponse) string {
 		return ""
 	}
 
-	for _, bindings := range container.HostConfig.PortBindings {
+	ports := make([]nat.Port, 0, len(container.HostConfig.PortBindings))
+	for port := range container.HostConfig.PortBindings {
+		if port.Proto() != "tcp" {
+			continue
+		}
+		ports = append(ports, port)
+	}
+	sort.Slice(ports, func(i, j int) bool {
+		if ports[i].Int() != ports[j].Int() {
+			return ports[i].Int() < ports[j].Int()
+		}
+		return ports[i].Proto() < ports[j].Proto()
+	})
+	for _, port := range ports {
+		bindings := append([]nat.PortBinding(nil), container.HostConfig.PortBindings[port]...)
+		sort.Slice(bindings, func(i, j int) bool {
+			if bindings[i].HostPort != bindings[j].HostPort {
+				return lessNumericPort(bindings[i].HostPort, bindings[j].HostPort)
+			}
+			return bindings[i].HostIP < bindings[j].HostIP
+		})
 		for _, binding := range bindings {
 			if binding.HostPort != "" {
 				return binding.HostPort
@@ -320,6 +352,15 @@ func extractFirstPort(container *dockercontainer.InspectResponse) string {
 	}
 
 	return ""
+}
+
+func lessNumericPort(a, b string) bool {
+	aPort, aErr := strconv.Atoi(a)
+	bPort, bErr := strconv.Atoi(b)
+	if aErr == nil && bErr == nil && aPort != bPort {
+		return aPort < bPort
+	}
+	return a < b
 }
 
 // getIconCDNTemplate returns the CDN template URL from environment variable
@@ -378,8 +419,8 @@ func buildIconURLFromImage(image string) string {
 	return buildIconURL(imageName)
 }
 
-// prettifyName converts container name to a nice title
-func prettifyName(name string) string {
+// PrettifyName converts a container name to a display title.
+func PrettifyName(name string) string {
 	name = strings.TrimSuffix(name, "-1")
 	name = strings.TrimSuffix(name, "_1")
 	name = strings.ReplaceAll(name, "_", " ")
@@ -399,31 +440,6 @@ func prettifyName(name string) string {
 
 // entryFields defines which label suffixes are entry-specific configuration fields
 var entryFields = map[string]bool{
-	"service_port":          true,
-	"protocol":              true,
-	"path":                  true,
-	"ui_type":               true,
-	"all_users":             true,
-	"icon":                  true,
-	"title":                 true,
-	"file_types":            true,
-	"no_display":            true,
-	"control.access_perm":   true,
-	"control.port_perm":     true,
-	"control.path_perm":     true,
-	"redirect":              true,
-	"redirect_force_external": true,
-}
-
-var reservedEntryNames = map[string]bool{
-	"enable":                  true,
-	"install":                 true,
-	"install_volume":          true,
-	"appname":                 true,
-	"display_name":            true,
-	"desc":                    true,
-	"version":                 true,
-	"maintainer":              true,
 	"service_port":            true,
 	"protocol":                true,
 	"path":                    true,
@@ -433,27 +449,40 @@ var reservedEntryNames = map[string]bool{
 	"title":                   true,
 	"file_types":              true,
 	"no_display":              true,
-	"control":                 true,
+	"control.access_perm":     true,
+	"control.port_perm":       true,
+	"control.path_perm":       true,
 	"redirect":                true,
 	"redirect_force_external": true,
 }
 
+var reservedEntryNames = map[string]bool{
+	"enable":         true,
+	"install":        true,
+	"install_volume": true,
+	"appname":        true,
+	"display_name":   true,
+	"desc":           true,
+	"version":        true,
+	"maintainer":     true,
+	"_":              true,
+}
+
 // isEntryField checks if a field name is an entry configuration field
 func isEntryField(field string) bool {
-	if entryFields[field] {
-		return true
-	}
-	// Also check for control.* prefix
-	if strings.HasPrefix(field, "control.") {
-		return true
-	}
-	return false
+	return entryFields[field]
 }
 
 // isValidEntryName restricts label-derived entry names to safe path/config segments.
 func isValidEntryName(name string) bool {
 	if name == "" || reservedEntryNames[name] {
 		return false
+	}
+	for field := range entryFields {
+		fieldRoot := strings.SplitN(field, ".", 2)[0]
+		if name == fieldRoot {
+			return false
+		}
 	}
 	for _, c := range name {
 		if (c >= 'a' && c <= 'z') ||
@@ -470,12 +499,12 @@ func isValidEntryName(name string) bool {
 
 // hasDefaultEntry checks if there's a default entry configuration in labels
 func hasDefaultEntry(labels map[string]string) bool {
-	_, hasPort := labels["watchcow.service_port"]
-	_, hasProtocol := labels["watchcow.protocol"]
-	_, hasPath := labels["watchcow.path"]
-	_, hasTitle := labels["watchcow.title"]
-	_, hasUIType := labels["watchcow.ui_type"]
-	return hasPort || hasProtocol || hasPath || hasTitle || hasUIType
+	for field := range entryFields {
+		if labels["watchcow."+field] != "" {
+			return true
+		}
+	}
+	return false
 }
 
 // parseEntry parses a single entry from labels
@@ -533,18 +562,18 @@ func parseEntry(labels map[string]string, name string, displayName string, defau
 	}
 
 	return Entry{
-		Name:      name,
-		Title:     title,
-		Protocol:  getLabel(labels, prefix+"protocol", "http"),
-		Port:      getLabel(labels, prefix+"service_port", ""),
-		Path:      getLabel(labels, prefix+"path", "/"),
-		UIType:    getLabel(labels, prefix+"ui_type", "url"),
-		AllUsers:  getLabel(labels, prefix+"all_users", "true") == "true",
-		Icon:      getLabel(labels, prefix+"icon", iconFallback),
-		FileTypes: fileTypes,
-		NoDisplay: getLabel(labels, prefix+"no_display", "false") == "true",
-		Control:   control,
-		Redirect:  getLabel(labels, prefix+"redirect", ""),
+		Name:          name,
+		Title:         title,
+		Protocol:      getLabel(labels, prefix+"protocol", "http"),
+		Port:          getLabel(labels, prefix+"service_port", ""),
+		Path:          getLabel(labels, prefix+"path", "/"),
+		UIType:        getLabel(labels, prefix+"ui_type", "url"),
+		AllUsers:      getLabel(labels, prefix+"all_users", "true") == "true",
+		Icon:          getLabel(labels, prefix+"icon", iconFallback),
+		FileTypes:     fileTypes,
+		NoDisplay:     getLabel(labels, prefix+"no_display", "false") == "true",
+		Control:       control,
+		Redirect:      getLabel(labels, prefix+"redirect", ""),
 		ForceExternal: getLabel(labels, prefix+"redirect_force_external", "false") == "true",
 	}
 }
@@ -569,8 +598,8 @@ func ParseEntries(labels map[string]string, displayName string, defaultIcon stri
 		}
 	}
 
-	// Check for default entry configuration
-	if hasDefaultEntry(labels) {
+	// Keep the legacy single-entry behavior when no entry labels are present.
+	if hasDefaultEntry(labels) || len(entryNames) == 0 {
 		entry := parseEntry(labels, "", displayName, defaultIcon)
 		// Use container's first port as fallback if not specified
 		if entry.Port == "" {
@@ -579,8 +608,13 @@ func ParseEntries(labels map[string]string, displayName string, defaultIcon stri
 		entries = append(entries, entry)
 	}
 
-	// Parse named entries
+	// Parse named entries in a stable order so the default launch entry is deterministic.
+	names := make([]string, 0, len(entryNames))
 	for name := range entryNames {
+		names = append(names, name)
+	}
+	sort.Strings(names)
+	for _, name := range names {
 		entry := parseEntry(labels, name, displayName, defaultIcon)
 		// Use container's first port as fallback if not specified
 		if entry.Port == "" {

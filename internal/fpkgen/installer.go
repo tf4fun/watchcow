@@ -12,6 +12,19 @@ import (
 const fallbackInstallVolume = "1"
 const installVolumeLabel = "watchcow.install_volume"
 
+// RestoreStoppedAppError means uninstall failed and the app could not be
+// restarted, so callers should expose it as installed but stopped.
+type RestoreStoppedAppError struct {
+	UninstallErr error
+	RestoreErr   error
+}
+
+func (e *RestoreStoppedAppError) Error() string {
+	return fmt.Sprintf("%v; restoring stopped app failed: %v", e.UninstallErr, e.RestoreErr)
+}
+
+func (e *RestoreStoppedAppError) Unwrap() error { return e.UninstallErr }
+
 // Installer handles fnOS application installation via appcenter-cli
 type Installer struct {
 	appcenterCLIPath string
@@ -141,26 +154,40 @@ func (i *Installer) Uninstall(appName string) error {
 
 	// First stop the app
 	stopCmd := exec.Command(i.appcenterCLIPath, "stop", appName)
-	stopCmd.Run() // Ignore stop errors
+	stopErr := stopCmd.Run()
 
 	// Try to uninstall with appName as argument
 	uninstallCmd := exec.Command(i.appcenterCLIPath, "uninstall", appName)
 	output, err := uninstallCmd.CombinedOutput()
 	if err != nil {
-		// Try without argument (some versions may work differently)
-		slog.Debug("Uninstall with appName failed, trying alternate method",
-			"appName", appName,
-			"output", string(output))
-
-		// Log warning but don't fail - app may need manual uninstall
-		slog.Warn("Could not uninstall fnOS app automatically",
-			"appName", appName,
-			"hint", "may need manual uninstall from App Center")
-		return nil
+		failure := fmt.Errorf("appcenter-cli uninstall %s failed: %w: %s", appName, err, strings.TrimSpace(string(output)))
+		return i.restoreStoppedApp(appName, stopErr, failure)
+	}
+	installed, err := i.checkAppInstalled(appName)
+	if err != nil {
+		return i.restoreStoppedApp(appName, stopErr, fmt.Errorf("could not verify uninstall of %s: %w", appName, err))
+	}
+	if installed {
+		return i.restoreStoppedApp(appName, stopErr, fmt.Errorf("appcenter-cli reported success but %s is still installed", appName))
 	}
 
 	slog.Info("Successfully uninstalled fnOS app", "appName", appName)
 	return nil
+}
+
+func (i *Installer) restoreStoppedApp(appName string, stopErr, uninstallErr error) error {
+	if stopErr != nil {
+		return uninstallErr
+	}
+	output, err := exec.Command(i.appcenterCLIPath, "start", appName).CombinedOutput()
+	if err != nil {
+		return &RestoreStoppedAppError{
+			UninstallErr: uninstallErr,
+			RestoreErr:   fmt.Errorf("%w: %s", err, strings.TrimSpace(string(output))),
+		}
+	}
+	slog.Warn("Restored app after failed uninstall", "appName", appName)
+	return uninstallErr
 }
 
 // StartApp starts an installed application
@@ -213,11 +240,19 @@ func (i *Installer) IsAppStarting(appName string) bool {
 
 // IsAppInstalled checks if an app is installed by parsing appcenter-cli list output
 func (i *Installer) IsAppInstalled(appName string) bool {
-	cmd := exec.Command(i.appcenterCLIPath, "list")
-	output, err := cmd.Output()
+	installed, err := i.checkAppInstalled(appName)
 	if err != nil {
 		slog.Debug("Failed to list apps", "error", err)
 		return false
+	}
+	return installed
+}
+
+func (i *Installer) checkAppInstalled(appName string) (bool, error) {
+	cmd := exec.Command(i.appcenterCLIPath, "list")
+	output, err := cmd.CombinedOutput()
+	if err != nil {
+		return false, fmt.Errorf("appcenter-cli list failed: %w: %s", err, strings.TrimSpace(string(output)))
 	}
 
 	// Parse table output - look for appName in the first column
@@ -231,13 +266,13 @@ func (i *Installer) IsAppInstalled(appName string) bool {
 				installedApp := strings.TrimSpace(parts[1])
 				if installedApp == appName {
 					slog.Debug("App already installed", "appName", appName)
-					return true
+					return true, nil
 				}
 			}
 		}
 	}
 
-	return false
+	return false, nil
 }
 
 func parseAppcenterStatus(output string) string {

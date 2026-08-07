@@ -7,6 +7,7 @@ import (
 	"fmt"
 	"os"
 	"path/filepath"
+	"strings"
 	"text/template"
 )
 
@@ -180,20 +181,20 @@ type EntryControlData struct {
 
 // EntryData holds data for a single UI entry in template rendering
 type EntryData struct {
-	Name      string // Entry name (empty for default)
-	FullName  string // Full entry name: AppName or AppName.EntryName
-	Title     string // Display title
-	Protocol  string
-	Port      string
-	Path      string
-	UIType    string
-	AllUsers  bool
-	Icon      string            // Icon path (e.g., "images/icon_{0}.png")
-	FileTypes []string          // Supported file types
-	NoDisplay bool              // Hide from desktop
-	Control   *EntryControlData // Permission control
-	Redirect  string            // External redirect host for CGI mode
-	ForceExternal bool          // Skip local network detection, always redirect to external URL
+	Name          string // Entry name (empty for default)
+	FullName      string // Full entry name: AppName or AppName.EntryName
+	Title         string // Display title
+	Protocol      string
+	Port          string
+	Path          string
+	UIType        string
+	AllUsers      bool
+	Icon          string            // Icon path (e.g., "images/icon_{0}.png")
+	FileTypes     []string          // Supported file types
+	NoDisplay     bool              // Hide from desktop
+	Control       *EntryControlData // Permission control
+	Redirect      string            // External redirect host for CGI mode
+	ForceExternal bool              // Skip local network detection, always redirect to external URL
 }
 
 // TemplateData holds all data needed for template rendering
@@ -219,7 +220,7 @@ type TemplateData struct {
 
 	// Multi-entry support
 	Entries            []EntryData
-	DefaultLaunchEntry string // The entry name to use for desktop_applaunchname (first entry's FullName)
+	DefaultLaunchEntry string // Full entry ID used for desktop_applaunchname
 
 	// Collections
 	Ports       []string
@@ -272,13 +273,9 @@ func NewTemplateData(config *AppConfig) *TemplateData {
 		data.RestartPolicy = "unless-stopped"
 	}
 
-	// Build ports list
-	if config.Port != "" {
-		data.Ports = []string{config.Port + ":" + config.Port}
-	}
-
 	// Convert entries to template data
 	var defaultLaunchEntry string
+	var defaultLaunchPort string
 	for _, entry := range config.Entries {
 		// Generate icon filename: "icon_{0}.png" for default, "icon_<name>_{0}.png" for named
 		iconFilename := "icon_{0}.png"
@@ -300,6 +297,8 @@ func NewTemplateData(config *AppConfig) *TemplateData {
 		path := entry.Path
 		if path == "" {
 			path = "/"
+		} else if !strings.HasPrefix(path, "/") {
+			path = "/" + path
 		}
 		uiType := entry.UIType
 		if uiType == "" {
@@ -317,25 +316,35 @@ func NewTemplateData(config *AppConfig) *TemplateData {
 		}
 
 		data.Entries = append(data.Entries, EntryData{
-			Name:      entry.Name,
-			FullName:  fullName,
-			Title:     entry.Title,
-			Protocol:  protocol,
-			Port:      entry.Port,
-			Path:      path,
-			UIType:    uiType,
-			AllUsers:  entry.AllUsers,
-			Icon:      "images/" + iconFilename,
-			FileTypes: entry.FileTypes,
-			NoDisplay: entry.NoDisplay,
-			Control:   controlData,
-			Redirect:  entry.Redirect,
+			Name:          entry.Name,
+			FullName:      fullName,
+			Title:         entry.Title,
+			Protocol:      protocol,
+			Port:          entry.Port,
+			Path:          path,
+			UIType:        uiType,
+			AllUsers:      entry.AllUsers,
+			Icon:          "images/" + iconFilename,
+			FileTypes:     entry.FileTypes,
+			NoDisplay:     entry.NoDisplay,
+			Control:       controlData,
+			Redirect:      entry.Redirect,
 			ForceExternal: entry.ForceExternal,
 		})
 
-		// Track first displayable entry for default launch entry
-		if defaultLaunchEntry == "" && !entry.NoDisplay {
+		// Prefer the legacy unnamed entry as the app-card launch target.
+		if entry.Name == "" && !entry.NoDisplay {
 			defaultLaunchEntry = fullName
+			defaultLaunchPort = entry.Port
+			if entry.Redirect != "" {
+				defaultLaunchPort = ""
+			}
+		} else if defaultLaunchEntry == "" && !entry.NoDisplay {
+			defaultLaunchEntry = fullName
+			defaultLaunchPort = entry.Port
+			if entry.Redirect != "" {
+				defaultLaunchPort = ""
+			}
 		}
 
 		// Track if any entry uses redirect mode
@@ -344,8 +353,13 @@ func NewTemplateData(config *AppConfig) *TemplateData {
 		}
 	}
 
-	// Set default launch entry to first displayable entry's full name
+	// Keep manifest.service_port aligned with the launch entry. CGI redirect
+	// entries do not use protocol or port routing.
 	data.DefaultLaunchEntry = defaultLaunchEntry
+	data.Port = defaultLaunchPort
+	if data.Port != "" {
+		data.Ports = []string{data.Port + ":" + data.Port}
+	}
 
 	// Set WatchCow's paths for CGI script
 	if data.HasRedirect {
