@@ -11,6 +11,7 @@ import (
 	"sync"
 	"time"
 
+	"watchcow/internal/app"
 	"watchcow/internal/docker"
 )
 
@@ -59,6 +60,11 @@ func NewDashboardStorage() (*DashboardStorage, error) {
 	if err := s.load(); err != nil {
 		slog.Warn("Failed to load dashboard storage, starting fresh", "path", filePath, "error", err)
 	} else {
+		if count, err := s.migrateStoredAppNames(); err != nil {
+			slog.Warn("Failed to persist migrated dashboard app names", "path", filePath, "error", err)
+		} else if count > 0 {
+			slog.Info("Migrated dashboard app names to fnOS limits", "path", filePath, "configs", count)
+		}
 		slog.Debug("Loaded dashboard storage", "path", filePath, "configs", len(s.configs))
 	}
 
@@ -149,7 +155,9 @@ func (s *DashboardStorage) Set(cfg *StoredConfig) error {
 	defer s.mu.Unlock()
 
 	return s.updateAndSaveLocked(func(configs map[ContainerKey]*StoredConfig) {
-		configs[cfg.Key] = cloneStoredConfig(cfg)
+		stored := cloneStoredConfig(cfg)
+		reconcileStoredAppName(stored, stored.Key)
+		configs[stored.Key] = stored
 	})
 }
 
@@ -164,7 +172,9 @@ func (s *DashboardStorage) Replace(obsolete []ContainerKey, cfg *StoredConfig) e
 				delete(configs, key)
 			}
 		}
-		configs[cfg.Key] = cloneStoredConfig(cfg)
+		stored := cloneStoredConfig(cfg)
+		reconcileStoredAppName(stored, stored.Key)
+		configs[stored.Key] = stored
 	})
 }
 
@@ -389,6 +399,7 @@ func (s *DashboardStorage) MigrateLegacy(oldKey, newKey string) (*docker.StoredC
 	migrated := cloneStoredConfig(cfg)
 	migrated.Key = current
 	reconcileMigratedRuntimeConfig(migrated, old, current)
+	reconcileStoredAppName(migrated, current)
 	if err := s.updateAndSaveLocked(func(configs map[ContainerKey]*StoredConfig) {
 		delete(configs, old)
 		configs[current] = migrated
@@ -396,6 +407,67 @@ func (s *DashboardStorage) MigrateLegacy(oldKey, newKey string) (*docker.StoredC
 		return nil, err
 	}
 	return convertStoredConfigToDocker(migrated), nil
+}
+
+func (s *DashboardStorage) migrateStoredAppNames() (int, error) {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+
+	count := 0
+	for key, config := range s.configs {
+		candidate := cloneStoredConfig(config)
+		if reconcileStoredAppName(candidate, key) {
+			count++
+		}
+	}
+	if count == 0 {
+		return 0, nil
+	}
+
+	err := s.updateAndSaveLocked(func(configs map[ContainerKey]*StoredConfig) {
+		for key, config := range configs {
+			reconcileStoredAppName(config, key)
+		}
+	})
+	if err != nil {
+		return 0, err
+	}
+	return count, nil
+}
+
+// reconcileStoredAppName repairs Dashboard identifiers produced before the
+// fnOS 3-32 character limit was enforced. Deleting configs retain the exact
+// package identity requested for removal. Overlong identifiers are rejected
+// before installation, so active configs do not need an old package identity.
+func reconcileStoredAppName(config *StoredConfig, key ContainerKey) bool {
+	if config == nil || config.Deleting || config.AppName == "" ||
+		(len(config.AppName) >= app.MinAppNameLength && len(config.AppName) <= app.MaxAppNameLength) {
+		return false
+	}
+
+	appName := ""
+	if len(config.AppName) > app.MaxAppNameLength {
+		appName = app.BoundGeneratedAppName(config.AppName)
+	} else {
+		containerName, identityPorts, named := parseNamedContainerKey(key)
+		if !named {
+			return false
+		}
+		appName = app.DashboardAppName(containerName, firstHostPort(webPortsFromIdentity(identityPorts)))
+	}
+	if appName == config.AppName {
+		return false
+	}
+
+	blocked := !config.Pending && config.LastError != ""
+	config.AppName = appName
+	if !blocked {
+		config.Pending = true
+		config.LastError = ""
+	}
+	config.Revision = dashboardConfigRevision(config)
+	config.UpdatedAt = time.Now()
+	return true
 }
 
 func reconcileMigratedRuntimeConfig(config *StoredConfig, oldKey, newKey ContainerKey) {

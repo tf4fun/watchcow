@@ -18,7 +18,8 @@ const (
 	StatusRunning     Status = "running"     // Running
 	StatusStopped     Status = "stopped"     // Stopped
 	StatusUninstalled Status = "uninstalled" // Uninstalled
-	MaxAppNameLength         = 128
+	MinAppNameLength         = 3
+	MaxAppNameLength         = 32
 )
 
 // SanitizeAppNamePart keeps app name components within fnOS-friendly ASCII.
@@ -52,6 +53,12 @@ func GeneratedAppName(containerName, suffix string) string {
 	if suffix != "" {
 		appName += "." + SanitizeAppNamePart(suffix)
 	}
+	return BoundGeneratedAppName(appName)
+}
+
+// BoundGeneratedAppName deterministically shortens a previously generated
+// identifier without changing its identity when container metadata changes.
+func BoundGeneratedAppName(appName string) string {
 	if len(appName) <= MaxAppNameLength {
 		return appName
 	}

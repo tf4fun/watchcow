@@ -27,6 +27,52 @@ func TestExtractConfigRejectsUnsafeExplicitAppName(t *testing.T) {
 	}
 }
 
+func TestExtractConfigEnforcesExplicitAppNameLength(t *testing.T) {
+	newContainer := func(appName string) *dockercontainer.InspectResponse {
+		return &dockercontainer.InspectResponse{
+			ContainerJSONBase: &dockercontainer.ContainerJSONBase{
+				ID: "1234567890abcdef", Name: "/test",
+				HostConfig: &dockercontainer.HostConfig{},
+			},
+			Config: &dockercontainer.Config{Labels: map[string]string{"watchcow.appname": appName}},
+		}
+	}
+
+	generator := &Generator{}
+	valid := strings.Repeat("a", app.MaxAppNameLength)
+	config, err := generator.extractConfig(newContainer(valid))
+	if err != nil || config.AppName != valid {
+		t.Fatalf("maximum-length explicit appname was not preserved: config=%+v err=%v", config, err)
+	}
+	for _, invalid := range []string{
+		strings.Repeat("a", app.MinAppNameLength-1),
+		strings.Repeat("a", app.MaxAppNameLength+1),
+	} {
+		if _, err := generator.extractConfig(newContainer(invalid)); err == nil || !strings.Contains(err.Error(), "invalid watchcow.appname") {
+			t.Fatalf("explicit appname %q error = %v, want length error", invalid, err)
+		}
+	}
+}
+
+func TestExtractConfigBoundsIssue39DefaultLabelAppName(t *testing.T) {
+	generator := &Generator{}
+	container := &dockercontainer.InspectResponse{
+		ContainerJSONBase: &dockercontainer.ContainerJSONBase{
+			ID: "1234567890abcdef", Name: "/beecount-beecount-cloud-1",
+			HostConfig: &dockercontainer.HostConfig{},
+		},
+		Config: &dockercontainer.Config{Labels: map[string]string{"watchcow.enable": "true"}},
+	}
+
+	config, err := generator.extractConfig(container)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(config.AppName) > app.MaxAppNameLength {
+		t.Fatalf("default label appname exceeds fnOS limit: %q", config.AppName)
+	}
+}
+
 func TestExtractConfigSupportsHostNetworkWithExplicitServicePort(t *testing.T) {
 	generator := &Generator{}
 	container := &dockercontainer.InspectResponse{
@@ -75,8 +121,20 @@ func TestGenerateFromConfigRejectsUnsafeAppNameBeforeEditingOutput(t *testing.T)
 
 func TestValidateAppNameRejectsOverlongIdentifier(t *testing.T) {
 	err := ValidateAppName(strings.Repeat("a", app.MaxAppNameLength+1))
-	if err == nil || !strings.Contains(err.Error(), "at most 128") {
+	if err == nil || !strings.Contains(err.Error(), "at most 32") {
 		t.Fatalf("ValidateAppName() error = %v, want length error", err)
+	}
+}
+
+func TestValidateAppNameEnforcesFnpackLengthBounds(t *testing.T) {
+	if err := ValidateAppName(strings.Repeat("a", app.MinAppNameLength)); err != nil {
+		t.Fatalf("minimum-length appname rejected: %v", err)
+	}
+	if err := ValidateAppName(strings.Repeat("a", app.MaxAppNameLength)); err != nil {
+		t.Fatalf("maximum-length appname rejected: %v", err)
+	}
+	if err := ValidateAppName(strings.Repeat("a", app.MinAppNameLength-1)); err == nil || !strings.Contains(err.Error(), "at least 3") {
+		t.Fatalf("short appname error = %v, want minimum-length error", err)
 	}
 }
 

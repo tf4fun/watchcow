@@ -47,7 +47,7 @@ appcenter-cli install-local
 | 标签 | 必需 | 默认值 | 说明 |
 |------|------|--------|------|
 | `watchcow.enable` | ✅ 是 | - | 设为 `"true"` 启用 WatchCow 发现 |
-| `watchcow.appname` | 否 | `watchcow.<容器名>` | 应用唯一标识（不得含有空格） |
+| `watchcow.appname` | 否 | `watchcow.<容器名>` | 应用唯一标识；长度为 3–32 个 ASCII 字符，以字母或数字开头，仅允许字母、数字、`.`、`_`、`-` |
 | `watchcow.display_name` | 否 | 容器名 | 桌面及应用商店中的显示名称 |
 | `watchcow.desc` | 否 | 镜像名 | 应用描述 |
 | `watchcow.version` | 否 | `1.0.0` | 应用版本 |
@@ -133,7 +133,7 @@ watchcow.icon: "file://icons/icon.png"
 
 1. **必须添加 `watchcow.enable: "true"`** - 这是 WatchCow 发现容器的前提
 2. **所有 label 值必须是字符串** - 使用引号包裹，如 `"true"`, `"8080"`
-3. **appname 不能包含空格** - 推荐格式：`watchcow.<应用名>`
+3. **appname 必须符合 fnOS 限制** - 长度为 3–32 个 ASCII 字符，以字母或数字开头，仅允许字母、数字、`.`、`_`、`-`；推荐格式：`watchcow.<应用名>`
 4. **service_port 是宿主机端口** - 不是容器内部端口
 5. **推荐使用 `network_mode: bridge`** - 确保网络正常工作
 6. **推荐添加 `restart: unless-stopped`** - 保证容器自动重启

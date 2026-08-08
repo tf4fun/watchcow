@@ -470,7 +470,9 @@ func (h *DashboardHandler) handleContainerSave(w http.ResponseWriter, r *http.Re
 
 	// AppName is an installed-package identity. Generate it once and preserve it
 	// across later edits and port changes.
-	if config.AppName == "" {
+	if len(config.AppName) > app.MaxAppNameLength {
+		config.AppName = app.BoundGeneratedAppName(config.AppName)
+	} else if config.AppName == "" || len(config.AppName) < app.MinAppNameLength {
 		config.AppName = app.DashboardAppName(container.Name, firstHostPort(container.Ports))
 	}
 

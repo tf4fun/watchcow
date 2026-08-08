@@ -37,7 +37,7 @@ WatchCow will auto-detect the port (first exposed port), use the container name 
 | Label | Required | Default | Purpose |
 |-------|----------|---------|---------|
 | `watchcow.enable` | YES | — | Must be `"true"` to activate |
-| `watchcow.appname` | no | `watchcow.<container>` | Unique app ID (no spaces allowed) |
+| `watchcow.appname` | no | `watchcow.<container>` | Unique app ID; 3-32 ASCII characters, starting with a letter or number; letters, numbers, `.`, `_`, and `-` only |
 | `watchcow.display_name` | no | container name | Name shown on desktop & app store |
 | `watchcow.desc` | no | image name | Short description |
 | `watchcow.version` | no | `1.0.0` | App version string |
@@ -256,6 +256,6 @@ When converting a plain Docker Compose file to WatchCow format:
 
 - **Labels are immutable after container creation.** Changing labels requires `docker compose down && docker compose up -d` (destroy and recreate), not just restart.
 - **`service_port` is the host port**, not the container port. If `ports: "8080:80"`, use `"8080"`.
-- **`appname` must not contain spaces.** Use the format `watchcow.<name>`.
+- **`appname` must be 3-32 ASCII characters.** It must start with a letter or number and may contain only letters, numbers, `.`, `_`, and `-`. Use the format `watchcow.<name>`.
 - **When using `watchcow.redirect`**, the `service_port`, `protocol`, and `path` labels are ignored — the app opens the redirect URL directly.
 - **Multi-entry names must avoid reserved words**: `enable`, `appname`, `display_name`, `desc`, `version`, `maintainer` cannot be used as entry names.

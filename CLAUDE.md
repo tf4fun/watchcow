@@ -118,7 +118,7 @@ App appears in fnOS App Center
 | Label | Default | Description |
 |-------|---------|-------------|
 | `watchcow.enable` | - | Required: set to `"true"` to enable |
-| `watchcow.appname` | `watchcow.<container>` | Unique app identifier |
+| `watchcow.appname` | `watchcow.<container>` | Unique app identifier; 3-32 ASCII characters using letters, numbers, `.`, `_`, and `-` |
 | `watchcow.display_name` | Container name | Human-readable name |
 | `watchcow.desc` | Image name | App description |
 | `watchcow.version` | `1.0.0` | App version |

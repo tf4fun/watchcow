@@ -1,11 +1,14 @@
 package server
 
 import (
+	"encoding/gob"
 	"errors"
 	"os"
 	"path/filepath"
 	"testing"
 	"time"
+
+	"watchcow/internal/app"
 )
 
 var errInjectedStorageWrite = errors.New("injected storage write failure")
@@ -88,6 +91,82 @@ func TestDashboardStorage_SetAndGet(t *testing.T) {
 	filePath := filepath.Join(tmpDir, "dashboard.gob")
 	if _, err := os.Stat(filePath); os.IsNotExist(err) {
 		t.Error("dashboard.gob file was not created")
+	}
+}
+
+func TestDashboardStorage_LoadMigratesIssue39AppNames(t *testing.T) {
+	t.Setenv("TRIM_PKGETC", t.TempDir())
+	path := filepath.Join(os.Getenv("TRIM_PKGETC"), "dashboard.gob")
+	activeKey := ContainerKey("sunxiao0721/beecount-cloud:latest|@beecount-beecount-cloud-1;8080/tcp:8869")
+	deletingKey := ContainerKey("linyuchen/llbot:7.12.11|@llonebot-llonebot-1;8080/tcp:3080")
+	oldActiveName := "watchcow.beecount-beecount-cloud-1.8869"
+	oldDeletingName := "watchcow.llonebot-llonebot-1.3080"
+	legacy := map[ContainerKey]*StoredConfig{
+		activeKey: {
+			Key: activeKey, AppName: oldActiveName, Revision: "old", Pending: true, LastError: "应用包格式不符合系统版本要求",
+			Entries: []StoredEntry{{Protocol: "http", Port: "8869", Path: "/", UIType: "url"}},
+		},
+		deletingKey: {Key: deletingKey, AppName: oldDeletingName, Deleting: true},
+	}
+	f, err := os.Create(path)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := gob.NewEncoder(f).Encode(legacy); err != nil {
+		f.Close()
+		t.Fatal(err)
+	}
+	if err := f.Close(); err != nil {
+		t.Fatal(err)
+	}
+
+	storage, err := NewDashboardStorage()
+	if err != nil {
+		t.Fatal(err)
+	}
+	want := app.DashboardAppName("beecount-beecount-cloud-1", "8869")
+	got := storage.Get(activeKey)
+	if got == nil || got.AppName != want || len(got.AppName) != app.MaxAppNameLength {
+		t.Fatalf("active appname was not migrated: got=%+v want=%q", got, want)
+	}
+	if !got.Pending || got.LastError != "" || got.Revision != dashboardConfigRevision(got) {
+		t.Fatalf("migrated config was not scheduled for apply: %+v", got)
+	}
+	if deleting := storage.Get(deletingKey); deleting == nil || deleting.AppName != oldDeletingName || !deleting.Deleting {
+		t.Fatalf("deleting package identity changed: %+v", deleting)
+	}
+
+	reloaded, err := NewDashboardStorage()
+	if err != nil {
+		t.Fatal(err)
+	}
+	if persisted := reloaded.Get(activeKey); persisted == nil || persisted.AppName != want || !persisted.Pending {
+		t.Fatalf("appname migration was not persisted: %+v", persisted)
+	}
+}
+
+func TestDashboardStorage_LegacyKeyMigrationRepairsOverlongAppName(t *testing.T) {
+	t.Setenv("TRIM_PKGETC", t.TempDir())
+	storage, err := NewDashboardStorage()
+	if err != nil {
+		t.Fatal(err)
+	}
+	oldKey := ContainerKey("sunxiao0721/beecount-cloud:latest|8080:8869")
+	newKey := ContainerKey("sunxiao0721/beecount-cloud:latest|@beecount-beecount-cloud-1;8080/tcp:8869")
+	if err := storage.Set(&StoredConfig{
+		Key: oldKey, AppName: "watchcow.beecount-beecount-cloud-1.8869", Revision: "old",
+		Entries: []StoredEntry{{Protocol: "http", Port: "8869", Path: "/", UIType: "url"}},
+	}); err != nil {
+		t.Fatal(err)
+	}
+
+	migrated, err := storage.MigrateLegacy(string(oldKey), string(newKey))
+	if err != nil {
+		t.Fatal(err)
+	}
+	want := app.DashboardAppName("beecount-beecount-cloud-1", "8869")
+	if migrated == nil || migrated.AppName != want || !migrated.Pending || migrated.Revision == "old" {
+		t.Fatalf("legacy appname migration was incomplete: %+v", migrated)
 	}
 }
 
@@ -435,6 +514,41 @@ func TestDashboardStorage_MigrationBlocksWhenAllSelectedPortsAreRemoved(t *testi
 	}
 	if migrated == nil || migrated.Pending || migrated.LastError == "" || migrated.Entries[0].Port != "" {
 		t.Fatalf("portless migration was not blocked for dashboard input: %+v", migrated)
+	}
+}
+
+func TestDashboardStorage_AppNameMigrationPreservesPortRemovalBlock(t *testing.T) {
+	oldKey := ContainerKey("web:1|@beecount-beecount-cloud-1;80/tcp:8080")
+	newKey := ContainerKey("web:2|@beecount-beecount-cloud-1")
+	config := &StoredConfig{
+		Key: oldKey, AppName: "watchcow.beecount-beecount-cloud-1.8080", Revision: "old",
+		Entries: []StoredEntry{{Port: "8080", Protocol: "http", Path: "/", UIType: "url"}},
+	}
+
+	reconcileMigratedRuntimeConfig(config, oldKey, newKey)
+	reconcileStoredAppName(config, newKey)
+	if config.Pending || config.LastError == "" || config.Entries[0].Port != "" {
+		t.Fatalf("appname migration cleared the port-removal block: %+v", config)
+	}
+	if len(config.AppName) > app.MaxAppNameLength {
+		t.Fatalf("blocked config kept overlong appname %q", config.AppName)
+	}
+}
+
+func TestDashboardStorage_AppNameMigrationPreservesOriginalPortIdentity(t *testing.T) {
+	key := ContainerKey("web:2|@beecount-beecount-cloud-1;80/tcp:9090")
+	original := "watchcow.beecount-beecount-cloud-1.8080"
+	config := &StoredConfig{Key: key, AppName: original}
+
+	if !reconcileStoredAppName(config, key) {
+		t.Fatal("overlong appname was not migrated")
+	}
+	want := app.BoundGeneratedAppName(original)
+	if config.AppName != want {
+		t.Fatalf("migrated appname = %q, want original identity %q", config.AppName, want)
+	}
+	if current := app.DashboardAppName("beecount-beecount-cloud-1", "9090"); config.AppName == current {
+		t.Fatalf("migration incorrectly adopted the current port identity %q", current)
 	}
 }
 

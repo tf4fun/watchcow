@@ -147,6 +147,42 @@ func TestGeneratedAppNameBoundsLongAutomaticNames(t *testing.T) {
 	}
 }
 
+func TestBoundGeneratedAppNamePreservesOriginalIdentity(t *testing.T) {
+	original := "watchcow.beecount-beecount-cloud-1.8869"
+	got := BoundGeneratedAppName(original)
+	if len(got) != MaxAppNameLength {
+		t.Fatalf("BoundGeneratedAppName() length = %d, want %d: %q", len(got), MaxAppNameLength, got)
+	}
+	if got != BoundGeneratedAppName(original) {
+		t.Fatalf("BoundGeneratedAppName() is not deterministic: %q", got)
+	}
+	if got == BoundGeneratedAppName("watchcow.beecount-beecount-cloud-1.9090") {
+		t.Fatalf("different original identities collided: %q", got)
+	}
+}
+
+func TestDashboardAppNameBoundsIssue39ContainerNames(t *testing.T) {
+	tests := []struct {
+		containerName string
+		hostPort      string
+	}{
+		{containerName: "beecount-beecount-cloud-1", hostPort: "8869"},
+		{containerName: "llonebot-llonebot-1", hostPort: "3080"},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.containerName, func(t *testing.T) {
+			got := DashboardAppName(tt.containerName, tt.hostPort)
+			if len(got) != MaxAppNameLength {
+				t.Fatalf("DashboardAppName() length = %d, want %d: %q", len(got), MaxAppNameLength, got)
+			}
+			if got != DashboardAppName(tt.containerName, tt.hostPort) {
+				t.Fatalf("DashboardAppName() is not deterministic: %q", got)
+			}
+		})
+	}
+}
+
 func TestDashboardAppNameDisambiguatesSanitizedNames(t *testing.T) {
 	plain := DashboardAppName("foo-bar", "8080")
 	sanitized := DashboardAppName("foo_bar", "8080")

@@ -251,6 +251,9 @@ var validAppNamePattern = regexp.MustCompile(`^[A-Za-z0-9][A-Za-z0-9._-]*$`)
 // ValidateAppName validates the identifier used by the manifest, CGI route,
 // and temporary package directory.
 func ValidateAppName(appName string) error {
+	if len(appName) < app.MinAppNameLength {
+		return fmt.Errorf("invalid appname %q: must be at least %d ASCII characters", appName, app.MinAppNameLength)
+	}
 	if len(appName) > app.MaxAppNameLength {
 		return fmt.Errorf("invalid appname %q: must be at most %d ASCII characters", appName, app.MaxAppNameLength)
 	}
